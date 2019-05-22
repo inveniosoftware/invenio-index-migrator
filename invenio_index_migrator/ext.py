@@ -34,7 +34,7 @@ class InvenioIndexSync(object):
     @cached_property
     def jobs(self):
         """Get all configured sync jobs."""
-        jobs_config = current_app.config.get('SEARCH_SYNC_JOBS', {})
+        jobs_config = current_app.config.get('INDEX_MIGRATOR_JOBS', {})
         for job_id, job_cfg in jobs_config.items():
             job_cfg['cls'] = obj_or_import_string(job_cfg['cls'])
         return jobs_config
@@ -55,5 +55,5 @@ class InvenioIndexSync(object):
         :param app: An instance of :class:`~flask.app.Flask`.
         """
         for k in dir(config):
-            if k.startswith('SEARCH_SYNC_'):
+            if k.startswith('INDEX_MIGRATOR_'):
                 app.config.setdefault(k, getattr(config, k))

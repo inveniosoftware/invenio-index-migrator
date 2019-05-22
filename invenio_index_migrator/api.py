@@ -20,19 +20,9 @@ from invenio_search.api import RecordsSearch
 from invenio_search.sync.indexer import SyncIndexer
 from invenio_search.sync.tasks import run_sync_job
 from invenio_search.proxies import current_search, current_search_client
-from invenio_search.utils import prefix_index
+from invenio_search.utils import prefix_index, build_index_name
 
-lt_es7 = ES_VERSION[0] < 7
-INDEX_SYNC_INDEX = '.invenio-index-sync'
-
-def get_es_client(es_config):
-    """Get ES client."""
-    if es_config['version'] == 2:
-        from elasticsearch2 import Elasticsearch
-        return Elasticsearch(host='localhost', port=9200)
-    else:
-        raise Exception('unsupported ES version: {}'.format(es_config['version']))
-
+from .utils import extract_doctype_from_mapping
 
 
 class SyncJob:
@@ -43,76 +33,93 @@ class SyncJob:
         """Initialize the job configuration."""
         self.rollover_threshold = rollover_threshold
         self.pid_mappings = pid_mappings
-        self.src_es_client = src_es_client
-        self.src_es_client['client'] = get_es_client(src_es_client)
-        self._state = SyncJobState(index=INDEX_SYNC_INDEX)
+        self.src_es_client = SyncEsClient(src_es_client)
+        self._state = SyncJobState(index=current_app.config['INDEX_MIGRATOR_INDEX_NAME'])
 
     def _build_index_mapping(self):
         """Build index mapping."""
-        old_client = self.src_es_client['client']
 
-        def get_src(name, prefix):
+        def get_src(name, prefix, suffix):
             index_name = None
-            if old_client.indices.exists(name):
-                index_name = name
-            elif old_client.indices.exists_alias(name):
-                indexes = list(old_client.indices.get_alias(name=name).keys())
-                if not indexes:
-                    raise Exception('no index found for alias: {}'.format(name))
+            src_index_name = build_index_name(None, name, prefix=prefix,
+                                               suffix=suffix)
+            src_alias_name = build_index_name(None, name, prefix=prefix,
+                                               suffix='')
+            if old_client.indices.exists(src_index_name):
+                index_name = src_index_name
+            elif old_client.indices.exists_alias(src_alias_name):
+                indexes = list(old_client.indices.get_alias(name=src_alias_name).keys())
+                if len(indexes) > 1:
+                    raise Exception('Multiple indexes found for alias {}.'.format(src_alias_name))
                 index_name = indexes[0]
             else:
-                raise Exception("alias or index doesn't exist: {}".format(name))
+                raise Exception(
+                    "alias({}) or index({}) doesn't exist".format(
+                        src_alias_name, src_index_name)
+                )
             return dict(
                 index=index_name,
-                prefix=prefix
             )
 
-        def get_dst(aliases, prefixed_name):
+        def find_aliases_for_index(index_name, aliases):
             if isinstance(aliases, str):
-                raise Exception('failed to find index with name: {}'.format(prefixed_name))
+                return None
             for key, values in aliases.items():
-                if key == prefixed_name:
-                    index, mapping = list(values.items())[0]
-                    return dict(
-                        index=index,
-                        mapping=mapping
-                    )
+                if key == index_name:
+                    return []
                 else:
-                    return get_dst(values, prefixed_name)
+                    found_aliases = find_aliases_for_index(index_name, values)
+                    if isinstance(found_aliases, list):
+                        found_aliases.append(key)
+                        return found_aliases
 
+
+        def get_dst(name):
+            dst_index = build_index_name(None, name)
+            mapping_fp = current_search.mappings[name]
+            dst_index_aliases = find_aliases_for_index(dst_index) or []
+            return dict(
+                index=dst_index,
+                aliases= dst_index_aliases,
+                mapping=mapping_fp,
+                doc_type=extract_doctype_from_mapping(mapping_fp),
+            )
+
+        old_client = self.src_es_client.client
         index_mapping = {}
         for pid_type, name in self.pid_mappings.items():
             mapping = dict(
-                src=get_src(name, self.src_es_client['prefix'] or ''),
-                dst=get_dst(current_search.aliases, prefix_index(current_app, name))
+                src=get_src(
+                    name,
+                    self.src_es_client.config.get('prefix'),
+                    self.src_es_client.config.get('suffix')
+                ),
+                dst=get_dst(name)
             )
-
             index_mapping[pid_type] = mapping
         return index_mapping
 
-    def init(self):
+    def init(self, dry_run=False):
         # Check if there's an index sync already happening (and bail)
-        if current_search_client.indices.exists(INDEX_SYNC_INDEX):
-            raise Exception('The index {} already exists, a job is already active.'.format(INDEX_SYNC_INDEX))
+        if current_search_client.indices.exists(self.state.index):
+            raise Exception('The index {} already exists, a job is already active.'.format(self.state.index))
 
         # Get old indices
         index_mapping = self._build_index_mapping()
 
+        if dry_run:
+           return index_mapping
+
         # Create new indices
         for indexes in index_mapping.values():
             dst = indexes['dst']
-            with open(dst['mapping'], 'r') as mapping_file:
-                mapping = json.loads(mapping_file.read())
-            current_search_client.indices.create(
-                index=dst['index'],
-                body=mapping
-            )
-            print('[*] created index: {index} with mappings {mapping}'.format(**dst))
+            index = dst['index']
+            index_result, _ = current_search.create_index(index, create_alias=False)
+            print('[*] created index: {index}'.format(index_result[0]))
 
         # Store index mapping in state
         initial_state = {
             'index_mapping': index_mapping,
-            'index_suffix': current_search.current_suffix,
             'last_record_update': None,
             'reindex_api_task_id': None,
             'threshold_reached': False,
@@ -132,20 +139,28 @@ class SyncJob:
 
         q = db.session.query(
             RecordMetadata.id.distinct(),
-            PersistentIdentifier.status
+            PersistentIdentifier.status,
+            PersistentIdentifier.pid_type
         ).join(
             PersistentIdentifier,
             RecordMetadata.id == PersistentIdentifier.object_uuid
         ).filter(
+            PersistentIdentifier.pid_type.in_(self.state['index_mapping'].keys()),
             PersistentIdentifier.object_type == 'rec',
             RecordMetadata.updated >= start_date
         ).yield_per(500)  # TODO: parameterize
 
-        for record_id, pid_status in q:
+
+        for record_id, pid_status, pid_type in q:
+            _dst = self.state['index_mapping'][pid_type]['dst']
+            _index = _dst['index']
+            _doc_type = _dst['doc_type']
+            payload = {'id': record_id, 'index': _index, 'doc_type': _doc_type}
             if pid_status == PIDStatus.DELETED:
-                yield {'op': 'delete', 'id': record_id}
+                payload['op'] = 'delete'
             else:
-                yield {'op': 'create', 'id': record_id}
+               payload['op'] = 'create'
+            yield payload
 
     def rollover(self):
         """Perform a rollover action."""
@@ -163,12 +178,12 @@ class SyncJob:
 
         if not start_time:
             # use reindex api
-            for doc_type, indexes in index_mapping.items():
-                print('[*] running reindex for doc type: {}'.format(doc_type))
-                old_es_host = '{host}:{port}'.format(**self.src_es_client['params'])
+            for pid_type, indexes in index_mapping.items():
+                print('[*] running reindex for pid type: {}'.format(pid_type))
+
                 payload = {
                     "source": {
-                        "remote": {"host": old_es_host},
+                        "remote": {"host": str(self.src_es_client)},
                         "index": indexes['src']['index']
                     },
                     "dest": {"index": indexes['dst']['index']}
@@ -180,25 +195,52 @@ class SyncJob:
                 self.state['last_record_update'] = \
                     str(datetime.timestamp(start_date))
             print('[*] reindex done')
-        # else:
-        #     # Fetch data from start_time from db
-        #     indexer = SyncIndexer()
+        else:
+            # Fetch data from start_time from db
+            indexer = SyncIndexer()
 
-        #     # Send indexer actions to special reindex queue
-        #     start_date = datetime.utcnow()
-        #     indexer._bulk_op(self.iter_indexer_ops(start_time), None)
-        #     self.state['last_record_update'] = \
-        #             str(datetime.timestamp(start_date))
-        #     # Run synchornous bulk index processing
-        #     # TODO: make this asynchronous by default
-        #     succeeded, failed = indexer.process_bulk_queue()
-        #     total_actions = succeeded + failed
-        #     print('[*] indexed {} record(s)'.format(total_actions))
-        #     if total_actions <= self.rollover_threshold:
-        #         self.rollover()
+            # Send indexer actions to special reindex queue
+            start_date = datetime.utcnow()
+            indexer._bulk_op(self.iter_indexer_ops(start_time), None)
+            self.state['last_record_update'] = \
+                    str(datetime.timestamp(start_date))
+            # Run synchornous bulk index processing
+            # TODO: make this asynchronous by default
+            succeeded, failed = indexer.process_bulk_queue()
+            total_actions = succeeded + failed
+            print('[*] indexed {} record(s)'.format(total_actions))
+            if total_actions <= self.rollover_threshold:
+                self.rollover()
 
 
-class SyncJobState:
+class SyncEsClient():
+    """ES clinet for sync jobs."""
+
+    def __init__(self, es_config):
+        """."""
+        self.config = es_config
+
+    @cached_property
+    def client(self):
+        """Return ES client."""
+        return self.get_es_client()
+
+    def __str__(self):
+        """Return ES client string representation."""
+        return '{host}:{port}'.format(**self.config['params'])
+
+
+    def get_es_client(self):
+        """Get ES client."""
+        if self.config['version'] == 2:
+            from elasticsearch2 import Elasticsearch2
+            # TODO: replace with **self.config['params']
+            return Elasticsearch2(host='localhost', port=9200)
+        else:
+            raise Exception('unsupported ES version: {}'.format(self.config['version']))
+
+
+class SyncJobState(object):
     """Synchronization job state.
 
     The state is stored in ElasticSearch and can be accessed similarly to a
@@ -209,7 +251,6 @@ class SyncJobState:
                  initial_state=None):
         """Synchronization job state in ElasticSearch."""
         self.index = index
-        self.doc_type = 'doc' if lt_es7 else '_doc'
         self.document_id = document_id or 'state'
         self.force = force
         self.client = client or current_search_client

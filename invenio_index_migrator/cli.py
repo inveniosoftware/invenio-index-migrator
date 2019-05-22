@@ -26,11 +26,32 @@ def sync():
 @sync.command('init')
 @with_appcontext
 @click.argument('job_id')
-def init_sync(job_id):
+@click_option('--yes-i-know', default=False)
+def init_sync(job_id, aknowledge):
     """Initialize index syncing."""
     job = current_index_sync.jobs[job_id]
     sync_job = job['cls'](**job['params'])
-    sync_job.init()
+
+    recipe = sync_job.init(dry_run=True)
+    click.secho(
+        '******* Information collected for this migration *******', fg='green')
+    for pid_type, mapping in recipe.items():
+        dst = mapping['dst']
+        click.secho('****************************', fg='green')
+        click.echo('For pid_type: {}'.format(pid_type))
+        click.echo('Index: {}'.format(dst['index']))
+        click.echo('Aliases: {}'.format(dst['aliases']))
+        click.echo('Mapping file path: {}'.format(dst['mapping']))
+        click.echo('Doc type: {}'.format(dst['doc_type']))
+
+    confirm = aknowledge or click.confirm(
+        'Are you sure you want to apply this recipe?',
+        default=False, abort=True
+    )
+    if confirm:
+        sync_job.init()
+    else:
+        click.echo('Aborting migration...')
 
 
 @sync.command('run')
