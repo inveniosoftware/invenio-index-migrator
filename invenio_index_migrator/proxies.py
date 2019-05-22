@@ -11,5 +11,5 @@
 from flask import current_app
 from werkzeug.local import LocalProxy
 
-current_index_sync = LocalProxy(
-    lambda: current_app.extensions['invenio-index-sync'])
+current_index_migrator = LocalProxy(
+    lambda: current_app.extensions['invenio-index-migrator'])

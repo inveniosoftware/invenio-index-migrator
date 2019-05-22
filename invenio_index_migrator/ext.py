@@ -13,12 +13,12 @@ from __future__ import absolute_import, print_function
 from flask import current_app
 from werkzeug.utils import cached_property
 
-from ..utils import obj_or_import_string
 from . import config
 from .cli import index_cmd
+from .utils import obj_or_import_string
 
 
-class InvenioIndexSync(object):
+class InvenioIndexMigrator(object):
     """Invenio index sync extension."""
 
     def __init__(self, app=None, **kwargs):

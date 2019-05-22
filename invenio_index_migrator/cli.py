@@ -13,8 +13,8 @@ import click
 from flask import current_app
 from flask.cli import with_appcontext
 from invenio_search.cli import index as index_cmd
-from invenio_search.utils import obj_or_import_string
-from .proxies import current_index_sync
+from .proxies import current_index_migrator
+from .utils import obj_or_import_string
 
 
 @index_cmd.group()
@@ -26,10 +26,10 @@ def sync():
 @sync.command('init')
 @with_appcontext
 @click.argument('job_id')
-@click_option('--yes-i-know', default=False)
-def init_sync(job_id, aknowledge):
+@click.option('--yes-i-know', default=False)
+def init_sync(job_id, yes_i_know):
     """Initialize index syncing."""
-    job = current_index_sync.jobs[job_id]
+    job = current_index_migrator.jobs[job_id]
     sync_job = job['cls'](**job['params'])
 
     recipe = sync_job.init(dry_run=True)
@@ -44,7 +44,7 @@ def init_sync(job_id, aknowledge):
         click.echo('Mapping file path: {}'.format(dst['mapping']))
         click.echo('Doc type: {}'.format(dst['doc_type']))
 
-    confirm = aknowledge or click.confirm(
+    confirm = yes_i_know or click.confirm(
         'Are you sure you want to apply this recipe?',
         default=False, abort=True
     )
@@ -59,7 +59,7 @@ def init_sync(job_id, aknowledge):
 @click.argument('job_id')
 def run_sync(job_id):
     """Run current index syncing."""
-    job = current_index_sync.jobs[job_id]
+    job = current_index_migrator.jobs[job_id]
     sync_job = job['cls'](**job['params'])
     sync_job.run()
 

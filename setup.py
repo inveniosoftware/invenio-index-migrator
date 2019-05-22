@@ -85,12 +85,10 @@ setup(
     platforms='any',
     entry_points={
         'invenio_base.api_apps': [
-            'invenio_index_migrator = invenio_index_migrator:InvenioSearch',
-            'invenio_index_migrator_sync = invenio_index_migrator.sync:InvenioIndexSync',
+            'invenio_index_migrator = invenio_index_migrator:InvenioIndexMigrator',
         ],
         'invenio_base.apps': [
-            'invenio_index_migrator = invenio_index_migrator:InvenioSearch',
-            'invenio_index_migrator_sync = invenio_index_migrator.sync:InvenioIndexSync',
+            'invenio_index_migrator = invenio_index_migrator:InvenioIndexMigrator',
         ],
     },
     extras_require=extras_require,

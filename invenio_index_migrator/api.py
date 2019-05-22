@@ -17,11 +17,12 @@ from datetime import datetime
 from elasticsearch import VERSION as ES_VERSION
 from flask import current_app
 from invenio_search.api import RecordsSearch
-from invenio_search.sync.indexer import SyncIndexer
-from invenio_search.sync.tasks import run_sync_job
 from invenio_search.proxies import current_search, current_search_client
-from invenio_search.utils import prefix_index, build_index_name
+from invenio_search.utils import prefix_index, build_index_name, build_alias_name
+from werkzeug.utils import cached_property
 
+from .indexer import SyncIndexer
+from .tasks import run_sync_job
 from .utils import extract_doctype_from_mapping
 
 
@@ -41,10 +42,9 @@ class SyncJob:
 
         def get_src(name, prefix, suffix):
             index_name = None
-            src_index_name = build_index_name(None, name, prefix=prefix,
-                                               suffix=suffix)
-            src_alias_name = build_index_name(None, name, prefix=prefix,
-                                               suffix='')
+            src_index_name = build_index_name(name, prefix=prefix,
+                                              suffix=suffix)
+            src_alias_name = build_alias_name(name, prefix=prefix)
             if old_client.indices.exists(src_index_name):
                 index_name = src_index_name
             elif old_client.indices.exists_alias(src_alias_name):
@@ -75,9 +75,9 @@ class SyncJob:
 
 
         def get_dst(name):
-            dst_index = build_index_name(None, name)
+            dst_index = build_index_name(name)
             mapping_fp = current_search.mappings[name]
-            dst_index_aliases = find_aliases_for_index(dst_index) or []
+            dst_index_aliases = find_aliases_for_index(dst_index, current_search.aliases) or []
             return dict(
                 index=dst_index,
                 aliases= dst_index_aliases,
@@ -233,7 +233,7 @@ class SyncEsClient():
     def get_es_client(self):
         """Get ES client."""
         if self.config['version'] == 2:
-            from elasticsearch2 import Elasticsearch2
+            from elasticsearch2 import Elasticsearch as Elasticsearch2
             # TODO: replace with **self.config['params']
             return Elasticsearch2(host='localhost', port=9200)
         else:
@@ -247,11 +247,12 @@ class SyncJobState(object):
     python dictionary.
     """
 
-    def __init__(self, index, document_id=None, client=None, force=False,
-                 initial_state=None):
+    def __init__(self, index, document_id=None, doc_type='_doc', client=None,
+                 force=False, initial_state=None):
         """Synchronization job state in ElasticSearch."""
         self.index = index
         self.document_id = document_id or 'state'
+        self.doc_type = doc_type
         self.force = force
         self.client = client or current_search_client
 

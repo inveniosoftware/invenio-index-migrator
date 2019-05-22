@@ -8,6 +8,7 @@
 
 """Utility functions for index migration."""
 
+import json
 import six
 from werkzeug.utils import import_string
 
@@ -27,15 +28,15 @@ def obj_or_import_string(value, default=None):
 
 
 def extract_doctype_from_mapping(mapping_fp):
-            """Extract the doc_type from mapping filepath."""
-            from elasticsearch import VERSION as ES_VERSION
+    """Extract the doc_type from mapping filepath."""
+    from elasticsearch import VERSION as ES_VERSION
 
-            lt_es7 = ES_VERSION[0] < 7
-            _doc_type = None
-            if lt_es7:
-                _doc_type = '_doc'
-            else:
-                with open(mapping_fp, 'r') as mapping_file:
-                    mapping = json.loads(mapping_file.read())
-                    _doc_type = mapping[mapping.keys()[0]]
-            return _doc_type
+    lt_es7 = ES_VERSION[0] < 7
+    _doc_type = None
+    if lt_es7:
+        _doc_type = '_doc'
+    else:
+        with open(mapping_fp, 'r') as mapping_file:
+            mapping = json.loads(mapping_file.read())
+            _doc_type = mapping[list(mapping.keys())[0]]
+    return _doc_type

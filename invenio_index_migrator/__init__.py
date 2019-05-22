@@ -11,11 +11,11 @@
 from __future__ import absolute_import, print_function
 
 from .api import SyncJob
-from .ext import InvenioIndexSync
-from .proxies import current_index_sync
+from .ext import InvenioIndexMigrator
+from .proxies import current_index_migrator
 
 __all__ = (
-    'current_index_sync',
-    'InvenioIndexSync',
+    'current_index_migrator',
+    'InvenioIndexMigrator',
     'SyncJob',
 )
