@@ -26,6 +26,7 @@ SYNC_INDEXER_MQ_QUEUE = Queue(
 SYNC_INDEXER_MQ_ROUTING_KEY = 'sync-indexer'
 """Default routing key for message queue."""
 
+
 class SyncIndexer(RecordIndexer):
     """Indexer class for ES syncing module."""
 

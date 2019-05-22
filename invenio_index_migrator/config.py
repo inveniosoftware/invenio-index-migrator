@@ -10,21 +10,52 @@
 
 from __future__ import absolute_import, print_function
 
-SEARCH_SYNC_JOBS = {}
+INDEX_MIGRATOR_RECIPES = {}
 """Index sync job definitions.
 
 Example:
 
 .. code-block:: python
 
-    SEARCH_SYNC_JOBS = {
-        'records': {
-            'cls': 'my_site.sync.RecordSyncJob',
-            'params': {
-                'rollover_threshold': 100,
-                'old_es_client': ...,
-                'new_es_client': ...,
-            }
-        }
-    }
+    INDEX_MIGRATOR_RECIPES = dict(
+        records=dict(
+            cls='index_sync.sync.RecordSyncJob',
+            params=dict(
+                src_es_client=dict(
+                    prefix='',
+                    version=2,
+                    params=dict(
+                        host='es2',
+                        port=9200,
+                        use_ssl=True,
+                        http_auth='user:pass',
+                        url_prefix='on-demand',
+                    ),
+                ),
+                jobs=[
+                    dict(
+                        pid_type='recid',
+                        index='records-record-v1.0.0',
+                        rollover_threshold=10,
+                        reindex_params=dict(
+                            script=dict(
+                                source="if (ctx._source.foo == 'bar') {ctx._version++; ctx._source.remove('foo')}",
+                                lang='painless',
+                            ),
+                            source=dict(
+                                sort=dict(
+                                    date='desc'
+                                )
+                            ),
+                            dest=dict(
+                                op_type='create'
+                            ),
+                        ),
+                    )
+                ]
+            )
+        )
+    )
 """
+
+INDEX_MIGRATOR_INDEX_NAME = '.invenio-index-migrator'

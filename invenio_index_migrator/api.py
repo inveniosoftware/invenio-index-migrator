@@ -11,118 +11,135 @@
 from __future__ import absolute_import, print_function
 
 import json
+import warnings
 
 from datetime import datetime
 
 from elasticsearch import VERSION as ES_VERSION
 from flask import current_app
 from invenio_search.api import RecordsSearch
-from invenio_search.sync.indexer import SyncIndexer
-from invenio_search.sync.tasks import run_sync_job
 from invenio_search.proxies import current_search, current_search_client
-from invenio_search.utils import prefix_index
+from invenio_search.utils import prefix_index, build_index_name, build_alias_name
+from six import string_types
+from werkzeug.utils import cached_property
 
-lt_es7 = ES_VERSION[0] < 7
-INDEX_SYNC_INDEX = '.invenio-index-sync'
-
-def get_es_client(es_config):
-    """Get ES client."""
-    if es_config['version'] == 2:
-        from elasticsearch2 import Elasticsearch
-        return Elasticsearch(host='localhost', port=9200)
-    else:
-        raise Exception('unsupported ES version: {}'.format(es_config['version']))
-
+from .indexer import SyncIndexer, SYNC_INDEXER_MQ_QUEUE
+from .tasks import run_sync_job
+from .utils import extract_doctype_from_mapping, get_queue_size, ESClient, \
+    RecipeState
 
 
 class SyncJob:
     """Index synchronization job base class."""
 
-    def __init__(self, rollover_threshold,
-                 pid_mappings, src_es_client):
+    def __init__(self, jobs, src_es_client):
         """Initialize the job configuration."""
-        self.rollover_threshold = rollover_threshold
-        self.pid_mappings = pid_mappings
-        self.src_es_client = src_es_client
-        self.src_es_client['client'] = get_es_client(src_es_client)
-        self._state = SyncJobState(index=INDEX_SYNC_INDEX)
+        self.jobs = jobs
+        self.src_es_client = ESClient(src_es_client)
+        self._state = RecipeState(
+            index=current_app.config['INDEX_MIGRATOR_INDEX_NAME']
+        )
 
-    def _build_index_mapping(self):
+    def _build_jobs(self, dry_run=False):
         """Build index mapping."""
-        old_client = self.src_es_client['client']
 
         def get_src(name, prefix):
             index_name = None
-            if old_client.indices.exists(name):
-                index_name = name
-            elif old_client.indices.exists_alias(name):
-                indexes = list(old_client.indices.get_alias(name=name).keys())
-                if not indexes:
-                    raise Exception('no index found for alias: {}'.format(name))
+            src_alias_name = build_alias_name(name, prefix=prefix)
+            if old_client.indices.exists(src_alias_name):
+                index_name = src_alias_name
+            elif old_client.indices.exists_alias(src_alias_name):
+                indexes = list(old_client.indices.get_alias(name=src_alias_name).keys())
+                if len(indexes) > 1:
+                    raise Exception('Multiple indexes found for alias {}.'.format(src_alias_name))
                 index_name = indexes[0]
             else:
-                raise Exception("alias or index doesn't exist: {}".format(name))
+                raise Exception(
+                    "alias or index ({}) doesn't exist".format(src_alias_name)
+                )
             return dict(
                 index=index_name,
-                prefix=prefix
             )
 
-        def get_dst(aliases, prefixed_name):
+        def find_aliases_for_index(index_name, aliases):
             if isinstance(aliases, str):
-                raise Exception('failed to find index with name: {}'.format(prefixed_name))
+                return None
             for key, values in aliases.items():
-                if key == prefixed_name:
-                    index, mapping = list(values.items())[0]
-                    return dict(
-                        index=index,
-                        mapping=mapping
-                    )
+                if key == index_name:
+                    return [build_alias_name(key)]
                 else:
-                    return get_dst(values, prefixed_name)
+                    found_aliases = find_aliases_for_index(index_name, values)
+                    if isinstance(found_aliases, list):
+                        found_aliases.append(build_alias_name(key))
+                        return found_aliases
 
-        index_mapping = {}
-        for pid_type, name in self.pid_mappings.items():
-            mapping = dict(
-                src=get_src(name, self.src_es_client['prefix'] or ''),
-                dst=get_dst(current_search.aliases, prefix_index(current_app, name))
+
+        def get_dst(name):
+            dst_index = build_index_name(name)
+            mapping_fp = current_search.mappings[name]
+            dst_index_aliases = find_aliases_for_index(name, current_search.aliases) or []
+            return dict(
+                index=dst_index if dry_run else name,
+                aliases= dst_index_aliases,
+                mapping=mapping_fp,
+                doc_type=extract_doctype_from_mapping(mapping_fp),
             )
 
-            index_mapping[pid_type] = mapping
-        return index_mapping
+        old_client = self.src_es_client.client
+        jobs = []
+        for job in self.jobs:
+            name = job['index']
+            mapping = dict(
+                pid_type=job['pid_type'],
+                src=get_src(name, self.src_es_client.config.get('prefix')),
+                dst=get_dst(name),
+                last_record_update=None,
+                reindex_task_id=None,
+                threshold_reached=False,
+                rollover_threshold=job['rollover_threshold'],
+                rollover_ready=False,
+                rollover_finished=False,
+                stats={},
+                reindex_params=job.get('reindex_params', {})
+            )
+            jobs.append(mapping)
+        return jobs
 
-    def init(self):
+    def init(self, dry_run=False):
         # Check if there's an index sync already happening (and bail)
-        if current_search_client.indices.exists(INDEX_SYNC_INDEX):
-            raise Exception('The index {} already exists, a job is already active.'.format(INDEX_SYNC_INDEX))
+        if current_search_client.indices.exists(self.state.index):
+            raise Exception('The index {} already exists, a job is already active.'.format(self.state.index))
 
         # Get old indices
-        index_mapping = self._build_index_mapping()
+        jobs = self._build_jobs(dry_run=dry_run)
+
+        if dry_run:
+           return jobs
 
         # Create new indices
-        for indexes in index_mapping.values():
-            dst = indexes['dst']
-            with open(dst['mapping'], 'r') as mapping_file:
-                mapping = json.loads(mapping_file.read())
-            current_search_client.indices.create(
-                index=dst['index'],
-                body=mapping
+        for job in jobs:
+            dst = job['dst']
+            index = dst['index']
+            index_result, _ = current_search.create_index(index, create_alias=False)
+            index_name = index_result[0]
+            current_search_client.indices.put_settings(
+                index=index_name,
+                body=dict(
+                    index=dict(
+                        refresh_interval='60s'
+                    )
+                )
             )
-            print('[*] created index: {index} with mappings {mapping}'.format(**dst))
+            print('[*] created index: {}'.format(index_name))
+            job['dst']['index'] = index_name
 
         # Store index mapping in state
-        initial_state = {
-            'index_mapping': index_mapping,
-            'index_suffix': current_search.current_suffix,
-            'last_record_update': None,
-            'reindex_api_task_id': None,
-            'threshold_reached': False,
-            'rollover_ready': False,
-            'rollover_finished': False,
-            'stats': {},
-        }
+        initial_state = dict(
+            jobs=jobs,
+        )
         self.state.create(initial_state)
 
-    def iter_indexer_ops(self, start_date=None, end_date=None):
+    def iter_indexer_ops(self, job, start_date=None, end_date=None):
         """Iterate over documents that need to be reindexed."""
         from datetime import datetime, timedelta
         from invenio_db import db
@@ -132,20 +149,27 @@ class SyncJob:
 
         q = db.session.query(
             RecordMetadata.id.distinct(),
-            PersistentIdentifier.status
+            PersistentIdentifier.status,
+            PersistentIdentifier.pid_type
         ).join(
             PersistentIdentifier,
             RecordMetadata.id == PersistentIdentifier.object_uuid
         ).filter(
+            PersistentIdentifier.pid_type == job['pid_type'],
             PersistentIdentifier.object_type == 'rec',
             RecordMetadata.updated >= start_date
         ).yield_per(500)  # TODO: parameterize
 
-        for record_id, pid_status in q:
+        for record_id, pid_status, pid_type in q:
+            _dst = job['dst']
+            _index = _dst['index']
+            _doc_type = _dst['doc_type']
+            payload = {'id': record_id, 'index': _index, 'doc_type': _doc_type}
             if pid_status == PIDStatus.DELETED:
-                yield {'op': 'delete', 'id': record_id}
+                payload['op'] = 'delete'
             else:
-                yield {'op': 'create', 'id': record_id}
+               payload['op'] = 'create'
+            yield payload
 
     def rollover(self):
         """Perform a rollover action."""
@@ -155,118 +179,122 @@ class SyncJob:
     def state(self):
         return self._state
 
+    def run_reindex_job(self, job, job_index):
+        """Fetch source index using ES Reindex API."""
+        pid_type = job['pid_type']
+        print('[*] running reindex for pid type: {}'.format(pid_type))
+        reindex_params = job['reindex_params']
+        source_params = reindex_params.pop('source', {})
+        dest_params = reindex_params.pop('dest', {})
+
+        payload = dict(
+            source= dict(
+                remote=self.src_es_client.reindex_remote,
+                index=job['src']['index'],
+                **source_params
+            ),
+            dest=dict(
+                index=job['dst']['index'],
+                version_type='external',
+                **dest_params
+            ),
+            **reindex_params
+        )
+        # Reindex using ES Reindex API synchronously
+        # Keep track of the time we issued the reindex command
+        start_date = datetime.utcnow()
+        response = current_search_client.reindex(
+            wait_for_completion=False,
+            body=payload
+        )
+        # Update entire jobs key since nested assignments are not supported
+        jobs = self.state['jobs']
+        jobs[job_index]['stats']['total'] = self.src_es_client.client.count(
+            index=job['src']['index']
+        )['count']
+        jobs[job_index]['last_record_update'] = str(datetime.timestamp(start_date))
+        jobs[job_index]['reindex_task_id'] = response['task']
+        self.state['jobs'] = jobs
+        print('reindex task started: {}'.format(response['task']))
+
+    def run_delta_job(self, job, job_index):
+        """Calculate delta from DB changes since the last update."""
+        # Check if reindex task is running - abort
+        task = current_search_client.tasks.get(task_id=job['reindex_task_id'])
+        if not task['completed']:
+            raise RuntimeError('Reindex is currently running - aborting delta.')
+
+        # determine bounds
+        start_time = job['last_record_update']
+        if not start_time:
+            raise RuntimeError(
+                'no reindex task running nor start time - aborting')
+        else:
+            start_time = datetime.fromtimestamp(float(start_time))
+
+            # Fetch data from start_time from db
+            indexer = SyncIndexer()
+
+            # Send indexer actions to special reindex queue
+            start_date = datetime.utcnow()
+            indexer._bulk_op(self.iter_indexer_ops(job, start_time), None)
+            last_record_update = str(datetime.timestamp(start_date))
+            # Run synchornous bulk index processing
+            # TODO: make this asynchronous by default
+            succeeded, failed = indexer.process_bulk_queue(
+                es_bulk_kwargs=dict(raise_on_error=False)
+            )
+            total_actions = succeeded + failed
+            print('[*] indexed {} record(s)'.format(total_actions))
+            threshold_reached = False
+            if total_actions <= job['rollover_threshold']:
+                threshold_reached = True
+            jobs = self.state['jobs']
+            jobs[job_index]['last_record_update'] = last_record_update
+            jobs[job_index]['threshold_reached'] = threshold_reached
+            self.state['jobs'] = jobs
+
+    def run_job(self, job, job_index):
+        """Run job."""
+        if job['reindex_task_id']:
+            self.run_delta_job(job, job_index)
+        else:
+            self.run_reindex_job(job, job_index)
+
     def run(self):
         """Run the index sync job."""
-        # determine bounds
-        start_time = self.state['last_record_update']
-        index_mapping = self.state['index_mapping']
+        for index, job in enumerate(self.state['jobs']):
+            self.run_job(job, index)
 
-        if not start_time:
-            # use reindex api
-            for doc_type, indexes in index_mapping.items():
-                print('[*] running reindex for doc type: {}'.format(doc_type))
-                old_es_host = '{host}:{port}'.format(**self.src_es_client['params'])
-                payload = {
-                    "source": {
-                        "remote": {"host": old_es_host},
-                        "index": indexes['src']['index']
-                    },
-                    "dest": {"index": indexes['dst']['index']}
-                }
-                # Reindex using ES Reindex API synchronously
-                # Keep track of the time we issued the reindex command
-                start_date = datetime.utcnow()
-                current_search_client.reindex(body=payload)
-                self.state['last_record_update'] = \
-                    str(datetime.timestamp(start_date))
-            print('[*] reindex done')
-        # else:
-        #     # Fetch data from start_time from db
-        #     indexer = SyncIndexer()
-
-        #     # Send indexer actions to special reindex queue
-        #     start_date = datetime.utcnow()
-        #     indexer._bulk_op(self.iter_indexer_ops(start_time), None)
-        #     self.state['last_record_update'] = \
-        #             str(datetime.timestamp(start_date))
-        #     # Run synchornous bulk index processing
-        #     # TODO: make this asynchronous by default
-        #     succeeded, failed = indexer.process_bulk_queue()
-        #     total_actions = succeeded + failed
-        #     print('[*] indexed {} record(s)'.format(total_actions))
-        #     if total_actions <= self.rollover_threshold:
-        #         self.rollover()
-
-
-class SyncJobState:
-    """Synchronization job state.
-
-    The state is stored in ElasticSearch and can be accessed similarly to a
-    python dictionary.
-    """
-
-    def __init__(self, index, document_id=None, client=None, force=False,
-                 initial_state=None):
-        """Synchronization job state in ElasticSearch."""
-        self.index = index
-        self.doc_type = 'doc' if lt_es7 else '_doc'
-        self.document_id = document_id or 'state'
-        self.force = force
-        self.client = client or current_search_client
-
-    @property
-    def state(self):
-        """Get the full state."""
-        _state = self.client.get(
-            index=self.index,
-            doc_type=self.doc_type,
-            id=self.document_id,
-            ignore=[404],
-        )
-        return _state['_source']
-
-
-    def __getitem__(self, key):
-        """Get key in state."""
-        return self.state[key]
-
-    def __setitem__(self, key, value):
-        """Set key in state."""
-        state = self.state
-        state[key] = value
-        self._save(state)
-
-    def __delitem__(self, key):
-        """Delete key in state."""
-        state = self.state
-        del state[key]
-        self._save(state)
-
-    def update(self, **changes):
-        """Update multiple keys in the state."""
-        state = self.state
-        for key, value in changes.items():
-            state[key] = value
-        self._save(state)
-
-    def create(self, initial_state, force=False):
-        """Create state index and the document."""
-        if (self.force or force) and self.client.indices.exists(self.index):
-            self.client.indices.delete(self.index)
-        self.client.indices.create(self.index)
-        return self._save(initial_state)
-
-    def _save(self, state):
-        """Save the state to ElasticSearch."""
-        # TODO: User optimistic concurrency control via "version_type=external_gte"
-        self.client.index(
-            index=self.index,
-            id=self.document_id,
-            doc_type=self.doc_type,
-            body=state
-        )
-        return self.client.get(
-            index=self.index,
-            id=self.document_id,
-            doc_type=self.doc_type,
-        )
+    def status(self):
+        """Get status for index sync job."""
+        jobs = []
+        for index, job in enumerate(self.state['jobs']):
+            current = {}
+            current['completed'] = False
+            current['job'] = job
+            current['job_index'] = index
+            current['last_updated'] = job['last_record_update']
+            current['queue_size'] = get_queue_size(SYNC_INDEXER_MQ_QUEUE)
+            if job['reindex_task_id']:
+                task = current_search_client.tasks.get(
+                    task_id=job['reindex_task_id'])
+                current['task'] = task
+                current['completed'] = task['completed']
+                if task['completed']:
+                    current['status'] = 'Finished reindex'
+                    current['seconds'] = task['response']['took'] / 1000.0
+                    current['total'] = task['task']['status']['total']
+                    current['task_response'] = task['response']
+                else:
+                    current['status'] = 'Reindexing...'
+                    current['duration'] = task['task']['running_time_in_nanos']
+                    current['total'] = job['stats']['total']
+                    current['current'] = current_search_client.count(
+                        index=job['dst']['index']
+                    )['count']
+                    current['percent'] = 100.0 * current['current'] / current['total']
+            else:
+                current['status'] = 'Finished'
+            jobs.append(current)
+        return jobs
