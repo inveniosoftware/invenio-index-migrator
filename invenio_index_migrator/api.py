@@ -116,6 +116,7 @@ class SyncJob:
             index = dst['index']
             index_result, _ = current_search.create_index(index, create_alias=False)
             print('[*] created index: {index}'.format(index_result[0]))
+            indexes['dst']['index'] = index_result[0]
 
         # Store index mapping in state
         initial_state = {
