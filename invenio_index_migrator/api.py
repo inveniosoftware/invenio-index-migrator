@@ -19,6 +19,7 @@ from flask import current_app
 from invenio_search.api import RecordsSearch
 from invenio_search.proxies import current_search, current_search_client
 from invenio_search.utils import prefix_index, build_index_name, build_alias_name
+from six import string_types
 from werkzeug.utils import cached_property
 
 from .indexer import SyncIndexer
@@ -29,11 +30,12 @@ from .utils import extract_doctype_from_mapping
 class SyncJob:
     """Index synchronization job base class."""
 
-    def __init__(self, rollover_threshold,
-                 pid_mappings, src_es_client):
+    def __init__(self, rollover_threshold, pid_mappings, src_es_client,
+                 reindex_params={}):
         """Initialize the job configuration."""
         self.rollover_threshold = rollover_threshold
         self.pid_mappings = pid_mappings
+        self.reindex_params = reindex_params
         self.src_es_client = SyncEsClient(src_es_client)
         self._state = SyncJobState(index=current_app.config['INDEX_MIGRATOR_INDEX_NAME'])
 
@@ -66,11 +68,11 @@ class SyncJob:
                 return None
             for key, values in aliases.items():
                 if key == index_name:
-                    return [key]
+                    return [build_alias_name(key)]
                 else:
                     found_aliases = find_aliases_for_index(index_name, values)
                     if isinstance(found_aliases, list):
-                        found_aliases.append(key)
+                        found_aliases.append(build_alias_name(key))
                         return found_aliases
 
 
@@ -115,7 +117,7 @@ class SyncJob:
             dst = indexes['dst']
             index = dst['index']
             index_result, _ = current_search.create_index(index, create_alias=False)
-            print('[*] created index: {index}'.format(index_result[0]))
+            print('[*] created index: {}'.format(index_result[0]))
             indexes['dst']['index'] = index_result[0]
 
         # Store index mapping in state
@@ -181,13 +183,21 @@ class SyncJob:
             # use reindex api
             for pid_type, indexes in index_mapping.items():
                 print('[*] running reindex for pid type: {}'.format(pid_type))
+                reindex_params = self.reindex_params
+                source_params = reindex_params.pop('source', {})
+                dest_params = reindex_params.pop('dest', {})
 
                 payload = {
                     "source": {
-                        "remote": {"host": str(self.src_es_client)},
-                        "index": indexes['src']['index']
+                        "remote": self.src_es_client.reindex_remote,
+                        "index": indexes['src']['index'],
+                        **source_params,
                     },
-                    "dest": {"index": indexes['dst']['index']}
+                    "dest": {
+                        "index": indexes['dst']['index'],
+                        **dest_params,
+                    },
+                    **reindex_params
                 }
                 # Reindex using ES Reindex API synchronously
                 # Keep track of the time we issued the reindex command
@@ -197,6 +207,8 @@ class SyncJob:
                     str(datetime.timestamp(start_date))
             print('[*] reindex done')
         else:
+            start_time = datetime.fromtimestamp(float(start_time))
+
             # Fetch data from start_time from db
             indexer = SyncIndexer()
 
@@ -211,6 +223,7 @@ class SyncJob:
             total_actions = succeeded + failed
             print('[*] indexed {} record(s)'.format(total_actions))
             if total_actions <= self.rollover_threshold:
+                self.state['threshold_reached'] = True
                 self.rollover()
 
 
@@ -222,21 +235,52 @@ class SyncEsClient():
         self.config = es_config
 
     @cached_property
+    def reindex_remote(self):
+        """Return ES client reindex API host."""
+        client = self.client.transport.hosts[0]
+        params = {}
+        params['host'] = client.get('host', 'localhost')
+        params['port'] = client.get('port', 9200)
+        params['protocol'] = 'https' if client.get('use_ssl', False) else 'http'
+        params['url_prefix'] = client.get('url_prefix', '')
+
+        remote = dict(
+            host='{protocol}://{host}:{port}/{url_prefix}'.format(**params)
+        )
+
+        username, password = self.reindex_auth
+        if username and password:
+            remote['username'] = username
+            remote['password'] = password
+
+        return remote
+
+    @cached_property
+    def reindex_auth(self):
+        """Return username and password for reindex HTTP authentication."""
+        username, password = None, None
+
+        client = self.client.transport.hosts[0]
+        http_auth = client.get('http_auth', None)
+        if http_auth:
+            if isinstance(http_auth, string_types):
+                username, password = http_auth.split(':')
+            else:
+                username, password = http_auth
+
+        return username, password
+
+    @cached_property
     def client(self):
         """Return ES client."""
-        return self.get_es_client()
-
-    def __str__(self):
-        """Return ES client string representation."""
-        return '{host}:{port}'.format(**self.config['params'])
+        return self._get_es_client()
 
 
-    def get_es_client(self):
+    def _get_es_client(self):
         """Get ES client."""
         if self.config['version'] == 2:
             from elasticsearch2 import Elasticsearch as Elasticsearch2
-            # TODO: replace with **self.config['params']
-            return Elasticsearch2(host='localhost', port=9200)
+            return Elasticsearch2([self.config['params']])
         else:
             raise Exception('unsupported ES version: {}'.format(self.config['version']))
 

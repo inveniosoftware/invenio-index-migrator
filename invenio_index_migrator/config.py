@@ -21,17 +21,39 @@ Example:
         records=dict(
             cls='index_sync.sync.RecordSyncJob',
             params=dict(
-                rollover_threshold=100,
+                rollover_threshold=10,
                 src_es_client=dict(
-                    version=2,
                     prefix='',
                     suffix='',
-                    params={...}
+                    version=2,
+                    params=dict(
+                        host='es2',
+                        port=9200,
+                        use_ssl=True,
+                        http_auth='user:pass',
+                        url_prefix='on-demand',
+                    ),
                 ),
-                pid_mappings={...}
+                reindex_params=dict(
+                    script=dict(
+                        source="if (ctx._source.foo == 'bar') {ctx._version++; ctx._source.remove('foo')}",
+                        lang='painless',
+                    ),
+                    source=dict(
+                        sort=dict(
+                            date='desc'
+                        )
+                    ),
+                    dest=dict(
+                        op_type='create'
+                    ),
+                ),
+                pid_mappings={
+                    'recid': 'records-record-v1.0.0'
+                }
             )
         )
-)
+    )
 """
 
 INDEX_MIGRATOR_INDEX_NAME = '.invenio-index-sync'
