@@ -10,21 +10,20 @@
 
 from __future__ import absolute_import, print_function
 
-INDEX_MIGRATOR_JOBS = {}
+INDEX_MIGRATOR_RECIPES = {}
 """Index sync job definitions.
 
 Example:
 
 .. code-block:: python
 
-    INDEX_MIGRATOR_JOBS = dict(
+    INDEX_MIGRATOR_RECIPES = dict(
         records=dict(
             cls='index_sync.sync.RecordSyncJob',
             params=dict(
                 rollover_threshold=10,
                 src_es_client=dict(
                     prefix='',
-                    suffix='',
                     version=2,
                     params=dict(
                         host='es2',
@@ -34,23 +33,26 @@ Example:
                         url_prefix='on-demand',
                     ),
                 ),
-                reindex_params=dict(
-                    script=dict(
-                        source="if (ctx._source.foo == 'bar') {ctx._version++; ctx._source.remove('foo')}",
-                        lang='painless',
-                    ),
-                    source=dict(
-                        sort=dict(
-                            date='desc'
-                        )
-                    ),
-                    dest=dict(
-                        op_type='create'
-                    ),
-                ),
-                pid_mappings={
-                    'recid': 'records-record-v1.0.0'
-                }
+                jobs=[
+                    dict(
+                        pid_type='recid',
+                        index='records-record-v1.0.0',
+                        reindex_params=dict(
+                            script=dict(
+                                source="if (ctx._source.foo == 'bar') {ctx._version++; ctx._source.remove('foo')}",
+                                lang='painless',
+                            ),
+                            source=dict(
+                                sort=dict(
+                                    date='desc'
+                                )
+                            ),
+                            dest=dict(
+                                op_type='create'
+                            ),
+                        ),
+                    )
+                ]
             )
         )
     )

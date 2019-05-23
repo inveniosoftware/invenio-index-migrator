@@ -30,25 +30,21 @@ from .utils import extract_doctype_from_mapping
 class SyncJob:
     """Index synchronization job base class."""
 
-    def __init__(self, rollover_threshold, pid_mappings, src_es_client,
-                 reindex_params={}):
+    def __init__(self, rollover_threshold, jobs, src_es_client):
         """Initialize the job configuration."""
         self.rollover_threshold = rollover_threshold
-        self.pid_mappings = pid_mappings
-        self.reindex_params = reindex_params
+        self.jobs = jobs
         self.src_es_client = SyncEsClient(src_es_client)
         self._state = SyncJobState(index=current_app.config['INDEX_MIGRATOR_INDEX_NAME'])
 
     def _build_index_mapping(self, dry_run=False):
         """Build index mapping."""
 
-        def get_src(name, prefix, suffix):
+        def get_src(name, prefix):
             index_name = None
-            src_index_name = build_index_name(name, prefix=prefix,
-                                              suffix=suffix)
             src_alias_name = build_alias_name(name, prefix=prefix)
-            if old_client.indices.exists(src_index_name):
-                index_name = src_index_name
+            if old_client.indices.exists(src_alias_name):
+                index_name = src_alias_name
             elif old_client.indices.exists_alias(src_alias_name):
                 indexes = list(old_client.indices.get_alias(name=src_alias_name).keys())
                 if len(indexes) > 1:
@@ -56,8 +52,7 @@ class SyncJob:
                 index_name = indexes[0]
             else:
                 raise Exception(
-                    "alias({}) or index({}) doesn't exist".format(
-                        src_alias_name, src_index_name)
+                    "alias or index ({}) doesn't exist".format(src_alias_name)
                 )
             return dict(
                 index=index_name,
@@ -89,16 +84,14 @@ class SyncJob:
 
         old_client = self.src_es_client.client
         index_mapping = {}
-        for pid_type, name in self.pid_mappings.items():
+        for job in self.jobs:
+            name = job['index']
             mapping = dict(
-                src=get_src(
-                    name,
-                    self.src_es_client.config.get('prefix'),
-                    self.src_es_client.config.get('suffix')
-                ),
-                dst=get_dst(name)
+                src=get_src(name, self.src_es_client.config.get('prefix')),
+                dst=get_dst(name),
+                reindex_params=job.get('reindex_params', {})
             )
-            index_mapping[pid_type] = mapping
+            index_mapping[job['pid_type']] = mapping
         return index_mapping
 
     def init(self, dry_run=False):
@@ -181,24 +174,24 @@ class SyncJob:
 
         if not start_time:
             # use reindex api
-            for pid_type, indexes in index_mapping.items():
+            for pid_type, reindex_config in index_mapping.items():
                 print('[*] running reindex for pid type: {}'.format(pid_type))
-                reindex_params = self.reindex_params
+                reindex_params = reindex_config['reindex_params']
                 source_params = reindex_params.pop('source', {})
                 dest_params = reindex_params.pop('dest', {})
 
-                payload = {
-                    "source": {
-                        "remote": self.src_es_client.reindex_remote,
-                        "index": indexes['src']['index'],
-                        **source_params,
-                    },
-                    "dest": {
-                        "index": indexes['dst']['index'],
-                        **dest_params,
-                    },
+                payload = dict(
+                    source= dict(
+                        remote=self.src_es_client.reindex_remote,
+                        index=reindex_config['src']['index'],
+                        **source_params
+                    ),
+                    dest=dict(
+                        index=reindex_config['dst']['index'],
+                        **dest_params
+                    ),
                     **reindex_params
-                }
+                )
                 # Reindex using ES Reindex API synchronously
                 # Keep track of the time we issued the reindex command
                 start_date = datetime.utcnow()

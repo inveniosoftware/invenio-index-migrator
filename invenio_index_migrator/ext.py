@@ -34,7 +34,7 @@ class InvenioIndexMigrator(object):
     @cached_property
     def jobs(self):
         """Get all configured sync jobs."""
-        jobs_config = current_app.config.get('INDEX_MIGRATOR_JOBS', {})
+        jobs_config = current_app.config.get('INDEX_MIGRATOR_RECIPES', {})
         for job_id, job_cfg in jobs_config.items():
             job_cfg['cls'] = obj_or_import_string(job_cfg['cls'])
         return jobs_config
