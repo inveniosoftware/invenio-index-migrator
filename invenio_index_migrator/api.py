@@ -37,7 +37,7 @@ class SyncJob:
         self.src_es_client = SyncEsClient(src_es_client)
         self._state = SyncJobState(index=current_app.config['INDEX_MIGRATOR_INDEX_NAME'])
 
-    def _build_index_mapping(self):
+    def _build_index_mapping(self, dry_run=False):
         """Build index mapping."""
 
         def get_src(name, prefix, suffix):
@@ -66,7 +66,7 @@ class SyncJob:
                 return None
             for key, values in aliases.items():
                 if key == index_name:
-                    return []
+                    return [key]
                 else:
                     found_aliases = find_aliases_for_index(index_name, values)
                     if isinstance(found_aliases, list):
@@ -77,9 +77,9 @@ class SyncJob:
         def get_dst(name):
             dst_index = build_index_name(name)
             mapping_fp = current_search.mappings[name]
-            dst_index_aliases = find_aliases_for_index(dst_index, current_search.aliases) or []
+            dst_index_aliases = find_aliases_for_index(name, current_search.aliases) or []
             return dict(
-                index=dst_index,
+                index=dst_index if dry_run else name,
                 aliases= dst_index_aliases,
                 mapping=mapping_fp,
                 doc_type=extract_doctype_from_mapping(mapping_fp),
@@ -105,7 +105,7 @@ class SyncJob:
             raise Exception('The index {} already exists, a job is already active.'.format(self.state.index))
 
         # Get old indices
-        index_mapping = self._build_index_mapping()
+        index_mapping = self._build_index_mapping(dry_run=dry_run)
 
         if dry_run:
            return index_mapping
@@ -247,12 +247,12 @@ class SyncJobState(object):
     python dictionary.
     """
 
-    def __init__(self, index, document_id=None, doc_type='_doc', client=None,
+    def __init__(self, index, document_id=None, client=None,
                  force=False, initial_state=None):
         """Synchronization job state in ElasticSearch."""
         self.index = index
         self.document_id = document_id or 'state'
-        self.doc_type = doc_type
+        self.doc_type = '_doc'
         self.force = force
         self.client = client or current_search_client
 
