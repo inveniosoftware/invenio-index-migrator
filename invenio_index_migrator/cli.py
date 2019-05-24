@@ -89,6 +89,7 @@ def status_sync(recipe_id):
             datetime.fromtimestamp(float(job['last_updated']))
         ))
         click.echo('Jobs in queue: {}'.format(job['queue_size']))
+        click.echo('Threshold reached: {}'.format(job['job']['threshold_reached']))
         if 'duration' in job:
             click.echo('Duration: {:.1f} seconds'.format(
                 job['duration'] / 1000000000.0))

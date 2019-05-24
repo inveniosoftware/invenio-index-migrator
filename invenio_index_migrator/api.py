@@ -25,7 +25,7 @@ from werkzeug.utils import cached_property
 
 from .indexer import SyncIndexer, SYNC_INDEXER_MQ_QUEUE
 from .tasks import run_sync_job
-from .utils import extract_doctype_from_mapping
+from .utils import extract_doctype_from_mapping, ESClient, RecipeState
 
 
 class SyncJob:
@@ -34,8 +34,8 @@ class SyncJob:
     def __init__(self, jobs, src_es_client):
         """Initialize the job configuration."""
         self.jobs = jobs
-        self.src_es_client = SyncEsClient(src_es_client)
-        self._state = SyncJobState(
+        self.src_es_client = ESClient(src_es_client)
+        self._state = RecipeState(
             index=current_app.config['INDEX_MIGRATOR_INDEX_NAME']
         )
 
@@ -206,6 +206,7 @@ class SyncJob:
         response = current_search_client.reindex(
             wait_for_completion=False,
             requests_per_second=2,
+            size=1,
             body=payload
         )
         # Update entire jobs key since nested assignments are not supported
@@ -290,9 +291,7 @@ class SyncJob:
                 if task['completed']:
                     current['status'] = 'Finished reindex'
                     current['seconds'] = task['response']['took'] / 1000.0
-                    current['total'] = current_search_client.count(
-                        index=job['dst']['index']
-                    )['count']
+                    current['total'] = task['task']['status']['total']
                     current['task_response'] = task['response']
                 else:
                     current['status'] = 'Reindexing...'
@@ -306,146 +305,3 @@ class SyncJob:
                 current['status'] = 'Finished'
             jobs.append(current)
         return jobs
-
-
-
-class SyncEsClient():
-    """ES clinet for sync jobs."""
-
-    def __init__(self, es_config):
-        """."""
-        self.config = es_config
-
-    @cached_property
-    def reindex_remote(self):
-        """Return ES client reindex API host."""
-        client = self.client.transport.hosts[0]
-        params = {}
-        params['host'] = client.get('host', 'localhost')
-        params['port'] = client.get('port', 9200)
-        params['protocol'] = 'https' if client.get('use_ssl', False) else 'http'
-        params['url_prefix'] = client.get('url_prefix', '')
-
-        remote = dict(
-            host='{protocol}://{host}:{port}/{url_prefix}'.format(**params)
-        )
-
-        username, password = self.reindex_auth
-        if username and password:
-            remote['username'] = username
-            remote['password'] = password
-
-        return remote
-
-    @cached_property
-    def reindex_auth(self):
-        """Return username and password for reindex HTTP authentication."""
-        username, password = None, None
-
-        client = self.client.transport.hosts[0]
-        http_auth = client.get('http_auth', None)
-        if http_auth:
-            if isinstance(http_auth, string_types):
-                username, password = http_auth.split(':')
-            else:
-                username, password = http_auth
-
-        return username, password
-
-    @cached_property
-    def client(self):
-        """Return ES client."""
-        return self._get_es_client()
-
-
-    def _get_es_client(self):
-        """Get ES client."""
-        if self.config['version'] == 2:
-            from elasticsearch2 import Elasticsearch as Elasticsearch2
-            return Elasticsearch2([self.config['params']])
-        else:
-            raise Exception('unsupported ES version: {}'.format(self.config['version']))
-
-
-class SyncJobState():
-    """Synchronization job state.
-
-    The state is stored in ElasticSearch and can be accessed similarly to a
-    python dictionary.
-    """
-
-    def __init__(self, index, document_id=None, client=None,
-                 force=False, initial_state=None):
-        """Synchronization job state in ElasticSearch."""
-        self.index = build_alias_name(index)
-        self.document_id = document_id or 'state'
-        self.doc_type = '_doc'
-        self.force = force
-        self.client = client or current_search_client
-
-    @property
-    def state(self):
-        """Get the full state."""
-        _state = self.client.get(
-            index=self.index,
-            doc_type=self.doc_type,
-            id=self.document_id,
-            ignore=[404],
-        )
-        return _state['_source']
-
-
-    def __getitem__(self, key):
-        """Get key in state."""
-        return self.state[key]
-
-    def __setitem__(self, key, value):
-        """Set key in state."""
-        state = self.state
-        state[key] = value
-        self._save(state)
-
-    def __delitem__(self, key):
-        """Delete key in state."""
-        state = self.state
-        del state[key]
-        self._save(state)
-
-    def __iter__(self):
-        return iter(self.state)
-
-    def __len__(self):
-        return len(self.state)
-
-    def update(self, **changes):
-        """Update multiple keys in the state."""
-        state = self.state
-        for key, value in changes.items():
-            state[key] = value
-        self._save(state)
-
-    def create(self, initial_state, force=False):
-        """Create state index and the document."""
-        if (self.force or force) and self.client.indices.exists(self.index):
-            self.client.indices.delete(self.index)
-        self.client.indices.create(self.index)
-        return self._save(initial_state)
-
-    def _save(self, state):
-        """Save the state to ElasticSearch."""
-        # TODO: User optimistic concurrency control via "version_type=external_gte"
-        self.client.index(
-            index=self.index,
-            id=self.document_id,
-            doc_type=self.doc_type,
-            body=state
-        )
-        return self.client.get(
-            index=self.index,
-            id=self.document_id,
-            doc_type=self.doc_type,
-        )
-
-    def __repr__(self):
-        """String representation of the state."""
-        return str(self.state)
