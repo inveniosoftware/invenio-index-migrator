@@ -9,6 +9,7 @@
 """Index syncing CLI commands."""
 
 import click
+from datetime import datetime
 
 from flask import current_app
 from flask.cli import with_appcontext
@@ -25,11 +26,11 @@ def sync():
 
 @sync.command('init')
 @with_appcontext
-@click.argument('job_id')
+@click.argument('recipe_id')
 @click.option('--yes-i-know', is_flag=True)
-def init_sync(job_id, yes_i_know):
+def init_sync(recipe_id, yes_i_know):
     """Initialize index syncing."""
-    job_config = current_index_migrator.jobs[job_id]
+    job_config = current_index_migrator.jobs[recipe_id]
     sync_job = job_config['cls'](**job_config['params'])
 
     recipe = sync_job.init(dry_run=True)
@@ -57,10 +58,10 @@ def init_sync(job_id, yes_i_know):
 
 @sync.command('run')
 @with_appcontext
-@click.argument('job_id')
-def run_sync(job_id):
+@click.argument('recipe_id')
+def run_sync(recipe_id):
     """Run current index syncing."""
-    job = current_index_migrator.jobs[job_id]
+    job = current_index_migrator.jobs[recipe_id]
     sync_job = job['cls'](**job['params'])
     sync_job.run()
 
@@ -72,9 +73,34 @@ def rollover_sync():
 
 
 @sync.command('status')
-def status_sync():
+@with_appcontext
+@click.argument('recipe_id')
+def status_sync(recipe_id):
     """Get current index syncing status."""
-    pass
+    recipe = current_index_migrator.jobs[recipe_id]
+    sync_recipe = recipe['cls'](**recipe['params'])
+    click.echo('================ Status ================')
+    for job in sync_recipe.status():
+        click.echo('Job #{job_index} - {pid_type}\n'.format(
+            job_index=job['job_index'], pid_type=job['job']['pid_type']
+        ))
+        click.echo('Status: {}'.format(job['status']))
+        click.echo('Last updated: {}'.format(
+            datetime.fromtimestamp(float(job['last_updated']))
+        ))
+        click.echo('Jobs in queue: {}'.format(job['queue_size']))
+        if 'duration' in job:
+            click.echo('Duration: {:.1f} seconds'.format(
+                job['duration'] / 1000000000.0))
+        if job['completed']:
+            click.echo('Took: {} seconds'.format(job['seconds']))
+            click.echo('Reindexed: {} records'.format(job['total']))
+        else:
+            if 'current' in job and 'total' in job:
+                click.echo('Progress: {current}/{total} ({percent}%)'.format(
+                    **job
+                ))
+        click.echo('----------------------------------------')
 
 
 @sync.command('cancel')

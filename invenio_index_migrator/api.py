@@ -11,6 +11,7 @@
 from __future__ import absolute_import, print_function
 
 import json
+import warnings
 
 from datetime import datetime
 
@@ -22,7 +23,7 @@ from invenio_search.utils import prefix_index, build_index_name, build_alias_nam
 from six import string_types
 from werkzeug.utils import cached_property
 
-from .indexer import SyncIndexer
+from .indexer import SyncIndexer, SYNC_INDEXER_MQ_QUEUE
 from .tasks import run_sync_job
 from .utils import extract_doctype_from_mapping
 
@@ -203,9 +204,15 @@ class SyncJob:
         # Keep track of the time we issued the reindex command
         start_date = datetime.utcnow()
         response = current_search_client.reindex(
-            wait_for_completion=False, body=payload)
+            wait_for_completion=False,
+            requests_per_second=2,
+            body=payload
+        )
         # Update entire jobs key since nested assignments are not supported
         jobs = self.state['jobs']
+        jobs[job_index]['stats']['total'] = self.src_es_client.client.count(
+            index=job['src']['index']
+        )['count']
         jobs[job_index]['last_record_update'] = str(datetime.timestamp(start_date))
         jobs[job_index]['reindex_task_id'] = response['task']
         self.state['jobs'] = jobs
@@ -254,6 +261,51 @@ class SyncJob:
         """Run the index sync job."""
         for index, job in enumerate(self.state['jobs']):
             self.run_job(job, index)
+
+    def status(self):
+        """Get status for index sync job."""
+        def get_queue_size(queue_name):
+            """Get the current number of messages in a queue."""
+            from invenio_queues.proxies import current_queues
+            queue = current_queues.queues[queue_name]
+            _, size, _ = queue.queue.queue_declare(passive=True)
+            return size
+
+        jobs = []
+        for index, job in enumerate(self.state['jobs']):
+            current = {}
+            current['completed'] = False
+            current['job'] = job
+            current['job_index'] = index
+            current['last_updated'] = job['last_record_update']
+            try:
+                current['queue_size'] = get_queue_size(SYNC_INDEXER_MQ_QUEUE.name)
+            except:
+                current['queue_size'] = '?'
+            if job['reindex_task_id']:
+                task = current_search_client.tasks.get(
+                    task_id=job['reindex_task_id'])
+                current['task'] = task
+                current['completed'] = task['completed']
+                if task['completed']:
+                    current['status'] = 'Finished reindex'
+                    current['seconds'] = task['response']['took'] / 1000.0
+                    current['total'] = current_search_client.count(
+                        index=job['dst']['index']
+                    )['count']
+                    current['task_response'] = task['response']
+                else:
+                    current['status'] = 'Reindexing...'
+                    current['duration'] = task['task']['running_time_in_nanos']
+                    current['total'] = job['stats']['total']
+                    current['current'] = current_search_client.count(
+                        index=job['dst']['index']
+                    )['count']
+                    current['percent'] = 100.0 * current['current'] / current['total']
+            else:
+                current['status'] = 'Finished'
+            jobs.append(current)
+        return jobs
 
 
 
