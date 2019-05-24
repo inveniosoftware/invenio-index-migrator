@@ -10,10 +10,13 @@
 
 import json
 import six
+from celery import current_app as current_celery_app
 from werkzeug.utils import cached_property, import_string
 
 from invenio_search.proxies import current_search_client
 from invenio_search.utils import build_alias_name
+
+from .indexer import SYNC_INDEXER_MQ_QUEUE
 
 
 def obj_or_import_string(value, default=None):
@@ -43,6 +46,14 @@ def extract_doctype_from_mapping(mapping_fp):
     else:
         _doc_type = '_doc'
     return _doc_type
+
+
+def get_queue_size(queue):
+    """Get the queue size."""
+    with current_celery_app.pool.acquire(block=True) as connection:
+        bound_queue = queue.bind(connection)
+        _, size, _ = bound_queue.queue_declare(passive=True)
+    return size
 
 
 class ESClient():

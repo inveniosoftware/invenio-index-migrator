@@ -25,7 +25,8 @@ from werkzeug.utils import cached_property
 
 from .indexer import SyncIndexer, SYNC_INDEXER_MQ_QUEUE
 from .tasks import run_sync_job
-from .utils import extract_doctype_from_mapping, ESClient, RecipeState
+from .utils import extract_doctype_from_mapping, get_queue_size, ESClient, \
+    RecipeState
 
 
 class SyncJob:
@@ -268,13 +269,6 @@ class SyncJob:
 
     def status(self):
         """Get status for index sync job."""
-        def get_queue_size(queue_name):
-            """Get the current number of messages in a queue."""
-            from invenio_queues.proxies import current_queues
-            queue = current_queues.queues[queue_name]
-            _, size, _ = queue.queue.queue_declare(passive=True)
-            return size
-
         jobs = []
         for index, job in enumerate(self.state['jobs']):
             current = {}
@@ -282,10 +276,7 @@ class SyncJob:
             current['job'] = job
             current['job_index'] = index
             current['last_updated'] = job['last_record_update']
-            try:
-                current['queue_size'] = get_queue_size(SYNC_INDEXER_MQ_QUEUE.name)
-            except:
-                current['queue_size'] = '?'
+            current['queue_size'] = get_queue_size(SYNC_INDEXER_MQ_QUEUE)
             if job['reindex_task_id']:
                 task = current_search_client.tasks.get(
                     task_id=job['reindex_task_id'])

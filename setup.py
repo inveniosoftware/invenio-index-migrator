@@ -19,7 +19,6 @@ tests_require = [
     'check-manifest>=0.35',
     'coverage>=4.0',
     'invenio-db[versioning]>=1.0.0',
-    'invenio-queues>=1.0.0',
     'isort>=4.2.15',
     'mock>=1.3.0',
     'pydocstyle>=1.0.0',
