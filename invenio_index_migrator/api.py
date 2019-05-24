@@ -126,7 +126,7 @@ class SyncJob:
                 index=index_name,
                 body=dict(
                     index=dict(
-                        refresh_interval='-1'
+                        refresh_interval='60s'
                     )
                 )
             )
@@ -159,7 +159,6 @@ class SyncJob:
             PersistentIdentifier.object_type == 'rec',
             RecordMetadata.updated >= start_date
         ).yield_per(500)  # TODO: parameterize
-
 
         for record_id, pid_status, pid_type in q:
             _dst = job['dst']
