@@ -205,8 +205,6 @@ class SyncJob:
         start_date = datetime.utcnow()
         response = current_search_client.reindex(
             wait_for_completion=False,
-            requests_per_second=2,
-            size=1,
             body=payload
         )
         # Update entire jobs key since nested assignments are not supported
@@ -222,6 +220,9 @@ class SyncJob:
     def run_delta_job(self, job, job_index):
         """Calculate delta from DB changes since the last update."""
         # Check if reindex task is running - abort
+        task = current_search_client.tasks.get(task_id=job['reindex_task_id'])
+        if not task['completed']:
+            raise RuntimeError('Reindex is currently running - aborting delta.')
 
         # determine bounds
         start_time = job['last_record_update']
@@ -240,7 +241,9 @@ class SyncJob:
             last_record_update = str(datetime.timestamp(start_date))
             # Run synchornous bulk index processing
             # TODO: make this asynchronous by default
-            succeeded, failed = indexer.process_bulk_queue()
+            succeeded, failed = indexer.process_bulk_queue(
+                es_bulk_kwargs=dict(raise_on_error=False)
+            )
             total_actions = succeeded + failed
             print('[*] indexed {} record(s)'.format(total_actions))
             threshold_reached = False

@@ -102,7 +102,7 @@ class ESClient():
             raise Exception('unsupported ES version: {}'.format(self.config['version']))
 
 
-class RecipeState():
+class RecipeState:
     """Synchronization recipe state.
 
     The state is stored in ElasticSearch and can be accessed similarly to a
@@ -117,17 +117,18 @@ class RecipeState():
         self.doc_type = '_doc'
         self.force = force
         self.client = client or current_search_client
+        self._state = {}
 
     @property
     def state(self):
         """Get the full state."""
-        _state = self.client.get(
+        self._state = self.client.get(
             index=self.index,
             doc_type=self.doc_type,
             id=self.document_id,
             ignore=[404],
-        )
-        return _state['_source']
+        )['_source']
+        return self._state
 
 
     def __getitem__(self, key):
