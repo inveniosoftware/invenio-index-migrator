@@ -188,6 +188,7 @@ class SyncJob:
                     ),
                     dest=dict(
                         index=reindex_config['dst']['index'],
+                        version_type='external',
                         **dest_params
                     ),
                     **reindex_params

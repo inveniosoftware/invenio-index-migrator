@@ -26,7 +26,7 @@ def sync():
 @sync.command('init')
 @with_appcontext
 @click.argument('job_id')
-@click.option('--yes-i-know', default=False)
+@click.option('--yes-i-know', is_flag=True)
 def init_sync(job_id, yes_i_know):
     """Initialize index syncing."""
     job = current_index_migrator.jobs[job_id]
