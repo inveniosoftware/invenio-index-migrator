@@ -29,14 +29,15 @@ def sync():
 @click.option('--yes-i-know', is_flag=True)
 def init_sync(job_id, yes_i_know):
     """Initialize index syncing."""
-    job = current_index_migrator.jobs[job_id]
-    sync_job = job['cls'](**job['params'])
+    job_config = current_index_migrator.jobs[job_id]
+    sync_job = job_config['cls'](**job_config['params'])
 
     recipe = sync_job.init(dry_run=True)
     click.secho(
         '******* Information collected for this migration *******', fg='green')
-    for pid_type, mapping in recipe.items():
-        dst = mapping['dst']
+    for job in recipe:
+        pid_type = job['pid_type']
+        dst = job['dst']
         click.secho('****************************', fg='green')
         click.echo('For pid_type: {}'.format(pid_type))
         click.echo('Index: {}'.format(dst['index']))

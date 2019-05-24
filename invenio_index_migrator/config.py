@@ -21,7 +21,6 @@ Example:
         records=dict(
             cls='index_sync.sync.RecordSyncJob',
             params=dict(
-                rollover_threshold=10,
                 src_es_client=dict(
                     prefix='',
                     version=2,
@@ -37,6 +36,7 @@ Example:
                     dict(
                         pid_type='recid',
                         index='records-record-v1.0.0',
+                        rollover_threshold=10,
                         reindex_params=dict(
                             script=dict(
                                 source="if (ctx._source.foo == 'bar') {ctx._version++; ctx._source.remove('foo')}",
@@ -58,4 +58,4 @@ Example:
     )
 """
 
-INDEX_MIGRATOR_INDEX_NAME = '.invenio-index-sync'
+INDEX_MIGRATOR_INDEX_NAME = '.invenio-index-migrator'

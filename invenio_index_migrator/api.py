@@ -30,14 +30,15 @@ from .utils import extract_doctype_from_mapping
 class SyncJob:
     """Index synchronization job base class."""
 
-    def __init__(self, rollover_threshold, jobs, src_es_client):
+    def __init__(self, jobs, src_es_client):
         """Initialize the job configuration."""
-        self.rollover_threshold = rollover_threshold
         self.jobs = jobs
         self.src_es_client = SyncEsClient(src_es_client)
-        self._state = SyncJobState(index=current_app.config['INDEX_MIGRATOR_INDEX_NAME'])
+        self._state = SyncJobState(
+            index=current_app.config['INDEX_MIGRATOR_INDEX_NAME']
+        )
 
-    def _build_index_mapping(self, dry_run=False):
+    def _build_jobs(self, dry_run=False):
         """Build index mapping."""
 
         def get_src(name, prefix):
@@ -83,16 +84,24 @@ class SyncJob:
             )
 
         old_client = self.src_es_client.client
-        index_mapping = {}
+        jobs = []
         for job in self.jobs:
             name = job['index']
             mapping = dict(
+                pid_type=job['pid_type'],
                 src=get_src(name, self.src_es_client.config.get('prefix')),
                 dst=get_dst(name),
+                last_record_update=None,
+                reindex_task_id=None,
+                threshold_reached=False,
+                rollover_threshold=job['rollover_threshold'],
+                rollover_ready=False,
+                rollover_finished=False,
+                stats={},
                 reindex_params=job.get('reindex_params', {})
             )
-            index_mapping[job['pid_type']] = mapping
-        return index_mapping
+            jobs.append(mapping)
+        return jobs
 
     def init(self, dry_run=False):
         # Check if there's an index sync already happening (and bail)
@@ -100,32 +109,26 @@ class SyncJob:
             raise Exception('The index {} already exists, a job is already active.'.format(self.state.index))
 
         # Get old indices
-        index_mapping = self._build_index_mapping(dry_run=dry_run)
+        jobs = self._build_jobs(dry_run=dry_run)
 
         if dry_run:
-           return index_mapping
+           return jobs
 
         # Create new indices
-        for indexes in index_mapping.values():
-            dst = indexes['dst']
+        for job in jobs:
+            dst = job['dst']
             index = dst['index']
             index_result, _ = current_search.create_index(index, create_alias=False)
             print('[*] created index: {}'.format(index_result[0]))
-            indexes['dst']['index'] = index_result[0]
+            job['dst']['index'] = index_result[0]
 
         # Store index mapping in state
-        initial_state = {
-            'index_mapping': index_mapping,
-            'last_record_update': None,
-            'reindex_api_task_id': None,
-            'threshold_reached': False,
-            'rollover_ready': False,
-            'rollover_finished': False,
-            'stats': {},
-        }
+        initial_state = dict(
+            jobs=jobs,
+        )
         self.state.create(initial_state)
 
-    def iter_indexer_ops(self, start_date=None, end_date=None):
+    def iter_indexer_ops(self, job, start_date=None, end_date=None):
         """Iterate over documents that need to be reindexed."""
         from datetime import datetime, timedelta
         from invenio_db import db
@@ -141,14 +144,14 @@ class SyncJob:
             PersistentIdentifier,
             RecordMetadata.id == PersistentIdentifier.object_uuid
         ).filter(
-            PersistentIdentifier.pid_type.in_(self.state['index_mapping'].keys()),
+            PersistentIdentifier.pid_type == job['pid_type'],
             PersistentIdentifier.object_type == 'rec',
             RecordMetadata.updated >= start_date
         ).yield_per(500)  # TODO: parameterize
 
 
         for record_id, pid_status, pid_type in q:
-            _dst = self.state['index_mapping'][pid_type]['dst']
+            _dst = job['dst']
             _index = _dst['index']
             _doc_type = _dst['doc_type']
             payload = {'id': record_id, 'index': _index, 'doc_type': _doc_type}
@@ -166,40 +169,48 @@ class SyncJob:
     def state(self):
         return self._state
 
-    def run(self):
-        """Run the index sync job."""
+    def run_reindex_job(self, job, job_index):
+        """Fetch source index using ES Reindex API."""
+        pid_type = job['pid_type']
+        print('[*] running reindex for pid type: {}'.format(pid_type))
+        reindex_params = job['reindex_params']
+        source_params = reindex_params.pop('source', {})
+        dest_params = reindex_params.pop('dest', {})
+
+        payload = dict(
+            source= dict(
+                remote=self.src_es_client.reindex_remote,
+                index=job['src']['index'],
+                **source_params
+            ),
+            dest=dict(
+                index=job['dst']['index'],
+                version_type='external',
+                **dest_params
+            ),
+            **reindex_params
+        )
+        # Reindex using ES Reindex API synchronously
+        # Keep track of the time we issued the reindex command
+        start_date = datetime.utcnow()
+        response = current_search_client.reindex(
+            wait_for_completion=False, body=payload)
+        # Update entire jobs key since nested assignments are not supported
+        jobs = self.state['jobs']
+        jobs[job_index]['last_record_update'] = str(datetime.timestamp(start_date))
+        jobs[job_index]['reindex_task_id'] = response['task']
+        self.state['jobs'] = jobs
+        print('reindex task started: {}'.format(response['task']))
+
+    def run_delta_job(self, job, job_index):
+        """Calculate delta from DB changes since the last update."""
+        # Check if reindex task is running - abort
+
         # determine bounds
-        start_time = self.state['last_record_update']
-        index_mapping = self.state['index_mapping']
-
+        start_time = job['last_record_update']
         if not start_time:
-            # use reindex api
-            for pid_type, reindex_config in index_mapping.items():
-                print('[*] running reindex for pid type: {}'.format(pid_type))
-                reindex_params = reindex_config['reindex_params']
-                source_params = reindex_params.pop('source', {})
-                dest_params = reindex_params.pop('dest', {})
-
-                payload = dict(
-                    source= dict(
-                        remote=self.src_es_client.reindex_remote,
-                        index=reindex_config['src']['index'],
-                        **source_params
-                    ),
-                    dest=dict(
-                        index=reindex_config['dst']['index'],
-                        version_type='external',
-                        **dest_params
-                    ),
-                    **reindex_params
-                )
-                # Reindex using ES Reindex API synchronously
-                # Keep track of the time we issued the reindex command
-                start_date = datetime.utcnow()
-                current_search_client.reindex(body=payload)
-                self.state['last_record_update'] = \
-                    str(datetime.timestamp(start_date))
-            print('[*] reindex done')
+            raise RuntimeError(
+                'no reindex task running nor start time - aborting')
         else:
             start_time = datetime.fromtimestamp(float(start_time))
 
@@ -208,17 +219,33 @@ class SyncJob:
 
             # Send indexer actions to special reindex queue
             start_date = datetime.utcnow()
-            indexer._bulk_op(self.iter_indexer_ops(start_time), None)
-            self.state['last_record_update'] = \
-                    str(datetime.timestamp(start_date))
+            indexer._bulk_op(self.iter_indexer_ops(job, start_time), None)
+            last_record_update = str(datetime.timestamp(start_date))
             # Run synchornous bulk index processing
             # TODO: make this asynchronous by default
             succeeded, failed = indexer.process_bulk_queue()
             total_actions = succeeded + failed
             print('[*] indexed {} record(s)'.format(total_actions))
-            if total_actions <= self.rollover_threshold:
-                self.state['threshold_reached'] = True
-                self.rollover()
+            threshold_reached = False
+            if total_actions <= job['rollover_threshold']:
+                threshold_reached = True
+            jobs = self.state['jobs']
+            jobs[job_index]['last_record_update'] = last_record_update
+            jobs[job_index]['threshold_reached'] = threshold_reached
+            self.state['jobs'] = jobs
+
+    def run_job(self, job, job_index):
+        """Run job."""
+        if job['reindex_task_id']:
+            self.run_delta_job(job, job_index)
+        else:
+            self.run_reindex_job(job, job_index)
+
+    def run(self):
+        """Run the index sync job."""
+        for index, job in enumerate(self.state['jobs']):
+            self.run_job(job, index)
+
 
 
 class SyncEsClient():
@@ -279,7 +306,7 @@ class SyncEsClient():
             raise Exception('unsupported ES version: {}'.format(self.config['version']))
 
 
-class SyncJobState(object):
+class SyncJobState():
     """Synchronization job state.
 
     The state is stored in ElasticSearch and can be accessed similarly to a
@@ -289,7 +316,7 @@ class SyncJobState(object):
     def __init__(self, index, document_id=None, client=None,
                  force=False, initial_state=None):
         """Synchronization job state in ElasticSearch."""
-        self.index = index
+        self.index = build_alias_name(index)
         self.document_id = document_id or 'state'
         self.doc_type = '_doc'
         self.force = force
@@ -323,6 +350,12 @@ class SyncJobState(object):
         del state[key]
         self._save(state)
 
+    def __iter__(self):
+        return iter(self.state)
+
+    def __len__(self):
+        return len(self.state)
+
     def update(self, **changes):
         """Update multiple keys in the state."""
         state = self.state
@@ -351,3 +384,7 @@ class SyncJobState(object):
             id=self.document_id,
             doc_type=self.doc_type,
         )
+
+    def __repr__(self):
+        """String representation of the state."""
+        return str(self.state)
