@@ -9,12 +9,12 @@
 """Utility functions for index migration."""
 
 import json
+
 import six
 from celery import current_app as current_celery_app
-from werkzeug.utils import cached_property, import_string
-
 from invenio_search.proxies import current_search_client
 from invenio_search.utils import build_alias_name
+from werkzeug.utils import cached_property, import_string
 
 from .indexer import SYNC_INDEXER_MQ_QUEUE
 
@@ -70,7 +70,8 @@ class ESClient():
         params = {}
         params['host'] = client.get('host', 'localhost')
         params['port'] = client.get('port', 9200)
-        params['protocol'] = 'https' if client.get('use_ssl', False) else 'http'
+        params['protocol'] = 'https' \
+            if client.get('use_ssl', False) else 'http'
         params['url_prefix'] = client.get('url_prefix', '')
 
         remote = dict(
@@ -109,90 +110,58 @@ class ESClient():
         if self.config['version'] == 2:
             from elasticsearch2 import Elasticsearch as Elasticsearch2
             return Elasticsearch2([self.config['params']])
+        elif self.config['version'] == 5:
+            from elasticsearch5 import Elasticsearch as Elasticsearch5
+            return Elasticsearch5([self.config['params']])
+        elif self.config['version'] == 6:
+            from elasticsearch6 import Elasticsearch as Elasticsearch6
+            return Elasticsearch6([self.config['params']])
+        elif self.config['version'] == 7:
+            from elasticsearch import Elasticsearch
+            return Elasticsearch([self.config['params']])
         else:
-            raise Exception('unsupported ES version: {}'.format(self.config['version']))
+            raise Exception('unsupported ES version: {}'.format(
+                self.config['version']))
 
 
-class RecipeState:
-    """Synchronization recipe state.
+class State(object):
+    """Migration ES state.
 
     The state is stored in ElasticSearch and can be accessed similarly to a
     python dictionary.
     """
 
-    def __init__(self, index, document_id=None, client=None,
-                 force=False, initial_state=None):
+    def __init__(self, index, document_id, client=None):
         """Synchronization job state in ElasticSearch."""
-        self.index = build_alias_name(index)
-        self.document_id = document_id or 'state'
+        self.index = index
+        self.document_id = document_id
         self.doc_type = '_doc'
-        self.force = force
         self.client = client or current_search_client
-        self._state = {}
 
     @property
     def state(self):
-        """Get the full state."""
-        self._state = self.client.get(
+        """Fetch the current state from Elasticsearch."""
+        return self.client.get(
             index=self.index,
             doc_type=self.doc_type,
             id=self.document_id,
             ignore=[404],
         )['_source']
-        return self._state
-
-
-    def __getitem__(self, key):
-        """Get key in state."""
-        return self.state[key]
-
-    def __setitem__(self, key, value):
-        """Set key in state."""
-        state = self.state
-        state[key] = value
-        self._save(state)
-
-    def __delitem__(self, key):
-        """Delete key in state."""
-        state = self.state
-        del state[key]
-        self._save(state)
-
-    def __iter__(self):
-        return iter(self.state)
-
-    def __len__(self):
-        return len(self.state)
-
-    def update(self, **changes):
-        """Update multiple keys in the state."""
-        state = self.state
-        for key, value in changes.items():
-            state[key] = value
-        self._save(state)
 
     def create(self, initial_state, force=False):
-        """Create state index and the document."""
-        if (self.force or force) and self.client.indices.exists(self.index):
+        """Create state document."""
+        if force and self.client.indices.exists(self.index):
             self.client.indices.delete(self.index)
         self.client.indices.create(self.index)
-        return self._save(initial_state)
+        return self.commit(initial_state)
 
-    def _save(self, state):
+    def commit(self, state):
         """Save the state to ElasticSearch."""
-        # TODO: User optimistic concurrency control via "version_type=external_gte"
+        # TODO: User optimistic concurrency control via
+        # "version_type=external_gte"
         self.client.index(
             index=self.index,
             id=self.document_id,
             doc_type=self.doc_type,
             body=state
         )
-        return self.client.get(
-            index=self.index,
-            id=self.document_id,
-            doc_type=self.doc_type,
-        )
-
-    def __repr__(self):
-        """String representation of the state."""
-        return str(self.state)

@@ -16,41 +16,41 @@ readme = open('README.rst').read()
 history = open('CHANGES.rst').read()
 
 tests_require = [
-    'check-manifest>=0.35',
-    'coverage>=4.0',
-    'invenio-db[versioning]>=1.0.0',
-    'isort>=4.2.15',
-    'mock>=1.3.0',
-    'pydocstyle>=1.0.0',
-    'pytest-cov>=1.8.0',
-    'pytest-random-order>=0.5.4',
+    "check-manifest>=0.35",
+    "coverage>=4.4.1",
+    "isort>=4.3.11",
+    "mock>=2.0.0",
+    "pydocstyle>=2.0.0",
+    "pytest-cov>=2.5.1",
+    "pytest-invenio>=1.1.0,<1.2.0",
+    "pytest-mock>=1.6.0",
     "pytest-pep8>=1.0.6",
-    'pytest>=3.8.1,<4',
+    "pytest-random-order>=0.5.4",
+    "pytest>=3.8.1,<4",
+    "invenio-app>=1.2.0",
 ]
+
+invenio_search_version = '1.2.0'
 
 extras_require = {
     'docs': [
         'Sphinx>=1.5.6,<1.6',
     ],
-    # Elasticsearch version
-    'elasticsearch2': [
-        'elasticsearch2',
-    ],
     'elasticsearch5': [
-        'elasticsearch5',
+        'invenio-search[elasticsearch5]>={}'.format(invenio_search_version),
     ],
     'elasticsearch6': [
-        'elasticsearch6',
+        'invenio-search[elasticsearch6]>={}'.format(invenio_search_version),
     ],
     'elasticsearch7': [
-        'elasticsearch>=7.0.0,<8.0.0',
+        'invenio-search[elasticsearch7]>={}'.format(invenio_search_version),
     ],
     'tests': tests_require,
 }
 
 extras_require['all'] = []
 for name, reqs in extras_require.items():
-    if name[0] == ':':
+    if name[0] == ':' or name in ('elasticsearch5', 'elasticsearch6', 'elasticsearch7'):
         continue
     extras_require['all'].extend(reqs)
 
@@ -59,6 +59,11 @@ setup_requires = [
 ]
 
 install_requires = [
+    "invenio-db>=1.0.0",
+    "invenio-search>=1.2.0",
+    "invenio-records>=1.3.0",
+    "invenio-indexer>=1.1.0",
+    "invenio-pidstore>=1.0.0"
 ]
 
 packages = find_packages()

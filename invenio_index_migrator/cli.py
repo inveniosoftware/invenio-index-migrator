@@ -8,37 +8,43 @@
 
 """Index syncing CLI commands."""
 
-import click
+import json
 from datetime import datetime
 
+import click
 from flask import current_app
 from flask.cli import with_appcontext
 from invenio_search.cli import index as index_cmd
+
 from .proxies import current_index_migrator
 from .utils import obj_or_import_string
 
 
 @index_cmd.group()
-def sync():
-    """Manage index syncing."""
+def migration():
+    """Manage index migrations."""
     pass
 
 
-@sync.command('init')
+@migration.command('init')
 @with_appcontext
 @click.argument('recipe_id')
 @click.option('--yes-i-know', is_flag=True)
-def init_sync(recipe_id, yes_i_know):
-    """Initialize index syncing."""
-    job_config = current_index_migrator.jobs[recipe_id]
-    sync_job = job_config['cls'](**job_config['params'])
+def init_migration(recipe_id, yes_i_know):
+    """Initialize index migration."""
+    recipe_config = current_index_migrator.recipes[recipe_id]
+    migration_recipe = recipe_config['cls'].create_from_config(
+        recipe_id,
+        **recipe_config['params']
+    )
 
-    recipe = sync_job.init(dry_run=True)
+    migration_recipe.init(dry_run=True)
     click.secho(
         '******* Information collected for this migration *******', fg='green')
-    for job in recipe:
-        pid_type = job['pid_type']
-        dst = job['dst']
+    for job, initial_state in migration_recipe.jobs.values():
+        pid_type = job.config['pid_type']
+        state = initial_state
+        dst = state['dst']
         click.secho('****************************', fg='green')
         click.echo('For pid_type: {}'.format(pid_type))
         click.echo('Index: {}'.format(dst['index']))
@@ -47,64 +53,50 @@ def init_sync(recipe_id, yes_i_know):
         click.echo('Doc type: {}'.format(dst['doc_type']))
 
     confirm = yes_i_know or click.confirm(
-        'Are you sure you want to apply this recipe?',
+        'Are you sure you want to apply this migration recipe?',
         default=False, abort=True
     )
     if confirm:
-        sync_job.init()
+        migration_recipe.init()
     else:
         click.echo('Aborting migration...')
 
 
-@sync.command('run')
+@migration.command('run')
 @with_appcontext
 @click.argument('recipe_id')
-def run_sync(recipe_id):
-    """Run current index syncing."""
-    job = current_index_migrator.jobs[recipe_id]
-    sync_job = job['cls'](**job['params'])
-    sync_job.run()
+def run_migration(recipe_id):
+    """Run current index migration."""
+    recipe_config = current_index_migrator.recipes[recipe_id]
+    migration_recipe = recipe_config['cls'].create_from_state(recipe_id)
+    migration_recipe.run()
 
 
-@sync.command('rollover')
-def rollover_sync():
+@migration.command('rollover')
+@with_appcontext
+@click.argument('recipe_id')
+def rollover_sync(recipe_id):
     """Perform the index syncing rollover action."""
-    pass
+    recipe_config = current_index_migrator.recipes[recipe_id]
+    migration_recipe = recipe_config['cls'].create_from_state(recipe_id)
+    migration_recipe.rollover()
 
 
-@sync.command('status')
+@migration.command('status')
 @with_appcontext
 @click.argument('recipe_id')
 def status_sync(recipe_id):
     """Get current index syncing status."""
-    recipe = current_index_migrator.jobs[recipe_id]
-    sync_recipe = recipe['cls'](**recipe['params'])
-    click.echo('================ Status ================')
-    for job in sync_recipe.status():
-        click.echo('Job #{job_index} - {pid_type}\n'.format(
-            job_index=job['job_index'], pid_type=job['job']['pid_type']
-        ))
-        click.echo('Status: {}'.format(job['status']))
-        click.echo('Last updated: {}'.format(
-            datetime.fromtimestamp(float(job['last_updated']))
-        ))
-        click.echo('Jobs in queue: {}'.format(job['queue_size']))
-        click.echo('Threshold reached: {}'.format(job['job']['threshold_reached']))
-        if 'duration' in job:
-            click.echo('Duration: {:.1f} seconds'.format(
-                job['duration'] / 1000000000.0))
-        if job['completed']:
-            click.echo('Took: {} seconds'.format(job['seconds']))
-            click.echo('Reindexed: {} records'.format(job['total']))
-        else:
-            if 'current' in job and 'total' in job:
-                click.echo('Progress: {current}/{total} ({percent}%)'.format(
-                    **job
-                ))
-        click.echo('----------------------------------------')
+    recipe_config = current_index_migrator.recipes[recipe_id]
+    migration_recipe = recipe_config['cls'].create_from_state(recipe_id)
+    print(json.dumps(migration_recipe.status(), sort_keys=True, indent=2))
 
 
-@sync.command('cancel')
-def cancel_sync():
+@migration.command('cancel')
+@with_appcontext
+@click.argument('recipe_id')
+def cancel_sync(recipe_id):
     """Cancel the current index syncing."""
-    pass
+    recipe_config = current_index_migrator.recipes[recipe_id]
+    migration_recipe = recipe_config['cls'].create_from_state(recipe_id)
+    migration_recipe.cancel()

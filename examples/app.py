@@ -55,7 +55,6 @@ from flask_security import current_user
 from invenio_accounts import InvenioAccounts
 from invenio_accounts.views import blueprint
 from invenio_db import InvenioDB
-
 from invenio_search import InvenioSearch, RecordsSearch, current_search_client
 
 # Create Flask application

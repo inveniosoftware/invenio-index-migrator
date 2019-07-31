@@ -5,15 +5,6 @@
 #
 # Invenio is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
-
-"""Index syncing module."""
+"""Helpers for tests."""
 
 from __future__ import absolute_import, print_function
-
-from .ext import InvenioIndexMigrator
-from .proxies import current_index_migrator
-
-__all__ = (
-    'current_index_migrator',
-    'InvenioIndexMigrator',
-)

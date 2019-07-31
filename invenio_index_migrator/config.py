@@ -19,9 +19,10 @@ Example:
 
     INDEX_MIGRATOR_RECIPES = dict(
         records=dict(
-            cls='index_sync.sync.RecordSyncJob',
+            cls='invenio_index_migrator.api.Migration',
             params=dict(
                 src_es_client=dict(
+                    strategy='cross_cluster_strategy',
                     prefix='',
                     version=2,
                     params=dict(
@@ -32,15 +33,16 @@ Example:
                         url_prefix='on-demand',
                     ),
                 ),
-                jobs=[
-                    dict(
+                jobs=dict(
+                    test_job=dict(
+                        cls='invenio_index_migrator.api.ReindexJob',
                         pid_type='recid',
                         index='records-record-v1.0.0',
                         rollover_threshold=10,
                         reindex_params=dict(
                             script=dict(
-                                source="if (ctx._source.foo == 'bar') {ctx._version++; ctx._source.remove('foo')}",
-                                lang='painless',
+                                source="if (ctx._source.foo == 'bar') {...}",
+                                lang='painless'
                             ),
                             source=dict(
                                 sort=dict(
@@ -52,7 +54,7 @@ Example:
                             ),
                         ),
                     )
-                ]
+                )
             )
         )
     )
