@@ -1,0 +1,17 @@
+[
+    {
+      "$schema": "https://localhost/schemas/authors/author-v1.0.0.json",
+      "name": "Mairy Poppins",
+      "author_id": 1
+    },
+    {
+      "$schema": "https://localhost/schemas/authors/author-v1.0.0.json",
+      "name": "Jack the reaper",
+      "author_id": 2
+    },
+    {
+      "$schema": "https://localhost/schemas/authors/author-v1.0.0.json",
+      "name": "Gandalf the white",
+      "author_id": 3
+    }
+]

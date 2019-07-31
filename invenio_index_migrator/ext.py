@@ -15,7 +15,7 @@ from werkzeug.utils import cached_property
 
 from . import config
 from .cli import index_cmd
-from .utils import obj_or_import_string
+from .utils import build_alias_name, obj_or_import_string
 
 
 class InvenioIndexMigrator(object):
@@ -32,12 +32,19 @@ class InvenioIndexMigrator(object):
             self.init_app(app, **kwargs)
 
     @cached_property
-    def jobs(self):
-        """Get all configured sync jobs."""
-        jobs_config = current_app.config.get('INDEX_MIGRATOR_RECIPES', {})
-        for job_id, job_cfg in jobs_config.items():
-            job_cfg['cls'] = obj_or_import_string(job_cfg['cls'])
-        return jobs_config
+    def recipes(self):
+        """Get all configured migration recipes."""
+        recipes_config = current_app.config.get('INDEX_MIGRATOR_RECIPES', {})
+        for recipe_id, recipe_cfg in recipes_config.items():
+            recipe_cfg['cls'] = obj_or_import_string(recipe_cfg['cls'])
+        return recipes_config
+
+    @cached_property
+    def index(self):
+        """Return migration index."""
+        return build_alias_name(
+            current_app.config['INDEX_MIGRATOR_INDEX_NAME']
+        )
 
     def init_app(self, app):
         """Flask application initialization.

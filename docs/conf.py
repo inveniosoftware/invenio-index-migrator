@@ -49,7 +49,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'invenio-index-migrator'
-copyright = u'2015, CERN'
+copyright = u'2019, CERN'
 author = u'CERN'
 
 # The version info for the project you're documenting, acts as replacement for

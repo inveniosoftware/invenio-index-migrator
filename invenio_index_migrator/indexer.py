@@ -11,6 +11,7 @@
 from __future__ import absolute_import, print_function
 
 from datetime import datetime
+
 from invenio_indexer.api import RecordIndexer
 from invenio_indexer.utils import es_bulk_param_compatibility
 from invenio_records.api import Record
@@ -27,14 +28,15 @@ SYNC_INDEXER_MQ_ROUTING_KEY = 'sync-indexer'
 """Default routing key for message queue."""
 
 
-class SyncIndexer(RecordIndexer):
+class MigrationIndexer(RecordIndexer):
     """Indexer class for ES syncing module."""
 
     def __init__(self, **kwargs):
+        """Initialize the migration indexer."""
         self._queue = SYNC_INDEXER_MQ_QUEUE
         self._routing_key = SYNC_INDEXER_MQ_ROUTING_KEY
         self._exchange = SYNC_INDEXER_MQ_EXCHANGE
-        super(SyncIndexer, self).__init__(**kwargs)
+        super(MigrationIndexer, self).__init__(**kwargs)
 
     #
     # Low-level implementation

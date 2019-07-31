@@ -1,0 +1,20 @@
+[
+    {
+      "$schema": "https://localhost/schemas/records/record-v1.0.0.json",
+      "title": "The Gulf: The Making of An American Sea",
+      "authors": ["Jack E. Davis"],
+      "abstracts": ["This is an abstract"]
+    },
+    {
+      "$schema": "https://localhost/schemas/records/record-v1.0.0.json",
+      "title": "Prairie Fires: The American Dreams of Laura Ingalls Wilder",
+      "authors": ["Caroline Fraser"],
+      "abstracts": ["This is an abstract"]
+    },
+    {
+      "$schema": "https://localhost/schemas/records/record-v1.0.0.json",
+      "title": "Half-light: Collected Poems 1965-2016",
+      "authors": ["Frank Bidart"],
+      "abstracts": ["This is an abstract"]
+    }
+]
