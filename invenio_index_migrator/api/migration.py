@@ -32,7 +32,7 @@ from ..utils import ESClient, State, extract_doctype_from_mapping, \
 
 
 def ensure_valid_config(f):
-    """Decorate to ensure that all config parametersare valid."""
+    """Decorate to ensure that all config parameters are valid."""
     def inner(self, name, **config):
         missing = [p for p in self.REQUIRED_PARAMS if p not in config]
         if missing:
@@ -64,7 +64,7 @@ class Migration(object):
         """Initialize the job configuration."""
         self.name = name
         self.jobs = {}
-        self.index = current_index_migrator.index
+        self.index = current_index_migrator.config_index
         self.config = config
         self.src_es_client = ESClient(config['src_es_client'])
         self.state = State(
@@ -86,7 +86,7 @@ class Migration(object):
     def create_from_state(cls, recipe_name, **recipe_config):
         """Create `Migration` instance from ES state."""
         document = current_search_client.get(
-            index=current_index_migrator.index, id=recipe_name)
+            index=current_index_migrator.config_index, id=recipe_name)
         return cls(recipe_name, **document["_source"]["config"])
 
     def load_jobs_from_config(self):
@@ -114,10 +114,6 @@ class Migration(object):
                             'Multiple indexes found for alias {}.'.format(
                                 src_alias_name))
                     index_name = indexes[0]
-                else:
-                    raise Exception(
-                        "alias ({}) doesn't exist".format(src_alias_name)
-                    )
             else:
                 raise Exception(
                     "alias or index ({}) doesn't exist".format(src_alias_name)
@@ -127,12 +123,14 @@ class Migration(object):
             )
 
         def find_aliases_for_index(index_name, aliases):
+            """Find all aliases for a given index."""
             if isinstance(aliases, str):
                 return None
             for key, values in aliases.items():
                 if key == index_name:
                     return [build_alias_name(key)]
                 else:
+                    # TODO: refactoring
                     found_aliases = find_aliases_for_index(index_name, values)
                     if isinstance(found_aliases, list):
                         found_aliases.append(build_alias_name(key))
@@ -215,9 +213,10 @@ class Migration(object):
         """Perform a rollover action."""
         payload = dict(actions=[])
         self.jobs = self.load_jobs_from_config()
-        if self.state.state['status'] == 'COMPLETED':
+
+        if self.state.read()['status'] == 'COMPLETED':
             for job in self.jobs.values():
-                state = job.state.state
+                state = job.state.read()
                 for alias in state["dst"]["aliases"]:
                     if self.strategy == Migration.IN_CLUSTER_STRATEGY:
                         payload["actions"].append({
@@ -247,9 +246,8 @@ class Migration(object):
         for name, job in self.jobs.items():
             print('[~] running job: {}'.format(name))
             job_states[name] = job.run()
-
         if all(state['threshold_reached'] for state in job_states.values()):
-            state = self.state.state
+            state = self.state.read()
             state['status'] = 'COMPLETED'
             self.state.commit(state)
             self.notify()
@@ -257,7 +255,7 @@ class Migration(object):
     def status(self):
         """Get status for index sync job."""
         self.jobs = self.load_jobs_from_config()
-        state = self.state.state
+        state = self.state.read()
         resp = dict(
             migration_status=state['status'],
             jobs={
@@ -277,6 +275,6 @@ class Migration(object):
         for job in self.jobs.values():
             job.cancel()
 
-        state = self.state.state
+        state = self.state.read()
         state['status'] = 'CANCELLED'
         self.state.commit(state)
