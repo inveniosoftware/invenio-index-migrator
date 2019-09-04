@@ -13,7 +13,7 @@ SPHINX-START
 
 Run the ElasticSearch and Redis server.
 
-Run example development server:
+Run example development setup:
 
 .. code-block:: console
 

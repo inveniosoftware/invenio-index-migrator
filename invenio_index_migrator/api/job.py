@@ -34,7 +34,13 @@ class Job(object):
     """Index migration job."""
 
     def __init__(self, name, migration, config):
-        """Initialize a migration job."""
+        """Initialize a migration job.
+
+        :param name: job's name.
+        :param migration: an invenio_index_migrator.api.migration.Migration
+            object.
+        :param config: job's configuration.
+        """
         self.name = name
         self.migration = migration
         self.config = config
@@ -61,21 +67,20 @@ class Job(object):
 
     def status(self):
         """Return the status of the job."""
-        job_state = self.state.state
+        job_state = self.state.read()
         current = {}
         current['completed'] = False
-        current['last_updated'] = str(datetime.fromtimestamp(
-            float(job_state['last_record_update'])))
+        current['last_updated'] = job_state['last_record_update']
         current['queue_size'] = get_queue_size(SYNC_INDEXER_MQ_QUEUE)
         if job_state['reindex_task_id']:
             task = current_search_client.tasks.get(
                 task_id=job_state['reindex_task_id'])
+            current['total'] = task['task']['status']['total']
             current['_es_task_response'] = task
             current['completed'] = task['completed']
             if task['completed']:
                 current['status'] = 'Finished reindex'
                 current['seconds'] = task['response']['took'] / 1000.0
-                current['total'] = task['task']['status']['total']
             else:
                 current['status'] = 'Reindexing...'
                 current['duration'] = '{:.1f} second(s)'.format(
@@ -83,10 +88,11 @@ class Job(object):
                 current['current'] = current_search_client.count(
                     index=job_state['dst']['index']
                 )['count']
-                current['percent'] = \
-                    100.0 * current['current'] / current['total']
+                if current['total'] > 0:
+                    current['percent'] = \
+                        100.0 * current['current'] / current['total']
             current['created'] = task['task']['status']['created']
-            current['total'] = task['task']['status']['total']
+
         else:
             current['status'] = 'Finished'
         current['threshold_reached'] = job_state['threshold_reached']
@@ -99,7 +105,7 @@ class Job(object):
             create_write_alias=False
         )
         index_name = index_result[0]
-        refresh_interval = self.config.get('refresh_interval', '60s')
+        refresh_interval = self.config.get('refresh_interval', '-1')
         if refresh_interval:
             current_search_client.indices.put_settings(
                 index=index_name,
@@ -111,7 +117,7 @@ class Job(object):
             )
         print('[*] created index: {}'.format(index_name))
 
-        state = self.state.state
+        state = self.state.read()
         state['dst']['index'] = index_name
         self.state.commit(state)
 
@@ -127,7 +133,7 @@ class ReindexJob(Job):
         source_params = reindex_params.pop('source', {})
         dest_params = reindex_params.pop('dest', {})
 
-        state = self.state.state
+        state = self.state.read()
         payload = dict(
             source=dict(
                 index=state['src']['index'],
@@ -147,7 +153,7 @@ class ReindexJob(Job):
         # Reindex using ES Reindex API synchronously
         # Keep track of the time we issued the reindex command
         start_date = datetime.utcnow()
-        wait_for_completion = self.config.get('wait_for_completion') or False
+        wait_for_completion = self.config.get('wait_for_completion', False)
         response = current_search_client.reindex(
             wait_for_completion=wait_for_completion,
             body=payload
@@ -155,22 +161,30 @@ class ReindexJob(Job):
         state['stats']['total'] = self.migration.src_es_client.client.count(
             index=state['src']['index']
         )['count']
-        state['last_record_update'] = str(datetime.timestamp(start_date))
+        state['last_record_update'] = str(start_date)
         task_id = response.get('task', None)
         state['reindex_task_id'] = task_id
         if wait_for_completion:
-            state['threshold_reached'] = True
-            state['status'] = 'COMPLETED'
+            if response.get('timed_out') or len(response['failures']) > 0:
+                state['status'] = 'FAILED'
+            else:
+                state['threshold_reached'] = True
+                state['status'] = 'COMPLETED'
         self.state.commit(state)
         print('reindex task started: {}'.format(task_id))
         return state
 
     def cancel(self):
         """Cancel reindexing job."""
-        state = self.state.state
+        state = self.state.read()
         task_id = state['reindex_task_id']
         cancel_response = current_search_client.tasks.cancel(task_id)
-        state['status'] = 'CANCELLED'
+        if cancel_response.get('timed_out') or \
+           len(cancel_response.get('failures', [])) > 0:
+            state['status'] = 'FAILED'
+        else:
+            state['status'] = 'CANCELLED'
+
         self.state.commit(state)
         if 'node_failures' in cancel_response:
             print('failed to cancel task', cancel_response)
@@ -205,7 +219,7 @@ class ReindexAndSyncJob(ReindexJob):
         ).yield_per(500)  # TODO: parameterize
 
         for record_id, pid_status, pid_type in q:
-            _dst = self.state.state['dst']
+            _dst = self.state.read()['dst']
             _index = _dst['index']
             _doc_type = _dst['doc_type']
             payload = {'id': record_id, 'index': _index, 'doc_type': _doc_type}
@@ -217,7 +231,7 @@ class ReindexAndSyncJob(ReindexJob):
 
     def run_delta_job(self):
         """Calculate delta from DB changes since the last update."""
-        state = self.state.state
+        state = self.state.read()
         # Check if reindex task is running - abort
         task = current_search_client.tasks.get(
             task_id=state['reindex_task_id'])
@@ -231,15 +245,14 @@ class ReindexAndSyncJob(ReindexJob):
             raise RuntimeError(
                 'no reindex task running nor start time - aborting')
         else:
-            start_time = datetime.fromtimestamp(float(start_time))
-
+            start_time = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S.%f')
             # Fetch data from start_time from db
             indexer = MigrationIndexer()
 
             # Send indexer actions to special reindex queue
             start_date = datetime.utcnow()
             indexer._bulk_op(self.iter_indexer_ops(start_time), None)
-            last_record_update = str(datetime.timestamp(start_date))
+            last_record_update = str(start_date)
             # Run synchornous bulk index processing
             # TODO: make this asynchronous by default
             succeeded, failed = indexer.process_bulk_queue(
@@ -257,11 +270,10 @@ class ReindexAndSyncJob(ReindexJob):
 
     def run(self):
         """Run reindexing and syncing job."""
-        if not self.config.get('wait_for_completion', False):
-            if self.state.state['reindex_task_id']:
-                return self.run_delta_job()
+        if self.state.read()['reindex_task_id']:
+            return self.run_delta_job()
         else:
-            if self.state.state['status'] != 'COMPLETED':
+            if self.state.read()['status'] != 'COMPLETED':
                 return super(ReindexAndSyncJob, self).run()
 
     def cancel(self):
