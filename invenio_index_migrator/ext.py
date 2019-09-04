@@ -40,7 +40,7 @@ class InvenioIndexMigrator(object):
         return recipes_config
 
     @cached_property
-    def index(self):
+    def config_index(self):
         """Return migration index."""
         return build_alias_name(
             current_app.config['INDEX_MIGRATOR_INDEX_NAME']

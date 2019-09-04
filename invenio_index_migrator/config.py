@@ -10,6 +10,10 @@
 
 from __future__ import absolute_import, print_function
 
+# TODO: refactoring of the `strategy` field:
+# since it currently has two variations only and seems to be used only at one
+# specific place, it might be simplified in a boolean or extended for other
+# uses in the migration/jobs.
 INDEX_MIGRATOR_RECIPES = {}
 """Index sync job definitions.
 
@@ -21,8 +25,8 @@ Example:
         records=dict(
             cls='invenio_index_migrator.api.Migration',
             params=dict(
+                strategy='cross_cluster_strategy',
                 src_es_client=dict(
-                    strategy='cross_cluster_strategy',
                     prefix='',
                     version=2,
                     params=dict(
@@ -34,7 +38,7 @@ Example:
                     ),
                 ),
                 jobs=dict(
-                    test_job=dict(
+                    records_simple_reindex=dict(
                         cls='invenio_index_migrator.api.ReindexJob',
                         pid_type='recid',
                         index='records-record-v1.0.0',

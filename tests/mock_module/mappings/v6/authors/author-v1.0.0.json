@@ -1,0 +1,9 @@
+{
+    "mappings": {
+        "properties": {
+            "author_id": {
+                "type": "integer"
+            }
+        }
+    }
+}

@@ -138,8 +138,7 @@ class State(object):
         self.doc_type = '_doc'
         self.client = client or current_search_client
 
-    @property
-    def state(self):
+    def read(self):
         """Fetch the current state from Elasticsearch."""
         return self.client.get(
             index=self.index,
@@ -159,7 +158,7 @@ class State(object):
         """Save the state to ElasticSearch."""
         # TODO: User optimistic concurrency control via
         # "version_type=external_gte"
-        self.client.index(
+        return self.client.index(
             index=self.index,
             id=self.document_id,
             doc_type=self.doc_type,

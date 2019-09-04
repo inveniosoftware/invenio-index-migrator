@@ -60,7 +60,6 @@ setup_requires = [
 
 install_requires = [
     "invenio-db>=1.0.0",
-    "invenio-search>=1.2.0",
     "invenio-records>=1.3.0",
     "invenio-indexer>=1.1.0",
     "invenio-pidstore>=1.0.0"
