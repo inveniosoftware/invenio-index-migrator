@@ -114,10 +114,6 @@ class Migration(object):
                             'Multiple indexes found for alias {}.'.format(
                                 src_alias_name))
                     index_name = indexes[0]
-                else:
-                    raise Exception(
-                        "alias ({}) doesn't exist".format(src_alias_name)
-                    )
             else:
                 raise Exception(
                     "alias or index ({}) doesn't exist".format(src_alias_name)
@@ -250,7 +246,6 @@ class Migration(object):
         for name, job in self.jobs.items():
             print('[~] running job: {}'.format(name))
             job_states[name] = job.run()
-
         if all(state['threshold_reached'] for state in job_states.values()):
             state = self.state.read()
             state['status'] = 'COMPLETED'

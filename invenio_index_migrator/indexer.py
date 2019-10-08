@@ -36,7 +36,11 @@ class MigrationIndexer(RecordIndexer):
         self._queue = SYNC_INDEXER_MQ_QUEUE
         self._routing_key = SYNC_INDEXER_MQ_ROUTING_KEY
         self._exchange = SYNC_INDEXER_MQ_EXCHANGE
-        super(MigrationIndexer, self).__init__(**kwargs)
+        super(MigrationIndexer, self).__init__(
+            queue=self._queue,
+            routing_key=self._routing_key,
+            exchange=self._exchange,
+            **kwargs)
 
     #
     # Low-level implementation
