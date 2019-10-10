@@ -37,7 +37,6 @@ def init_migration(recipe_id, yes_i_know):
         recipe_id,
         **recipe_config['params']
     )
-
     migration_recipe.init(dry_run=True)
     click.secho(
         '******* Information collected for this migration *******', fg='green')
@@ -47,10 +46,10 @@ def init_migration(recipe_id, yes_i_know):
         dst = state['dst']
         click.secho('****************************', fg='green')
         click.echo('For pid_type: {}'.format(pid_type))
-        click.echo('Index: {}'.format(dst['index']))
-        click.echo('Aliases: {}'.format(dst['aliases']))
-        click.echo('Mapping file path: {}'.format(dst['mapping']))
-        click.echo('Doc type: {}'.format(dst['doc_type']))
+        click.echo('Index: {}'.format(dst.get('index')))
+        click.echo('Aliases: {}'.format(dst.get('aliases')))
+        click.echo('Mapping file path: {}'.format(dst.get('mapping')))
+        click.echo('Doc type: {}'.format(dst.get('doc_type')))
 
     confirm = yes_i_know or click.confirm(
         'Are you sure you want to apply this migration recipe?',

@@ -10,12 +10,13 @@
 
 from __future__ import absolute_import, print_function
 
-from .job import Job, ReindexAndSyncJob, ReindexJob
+from .job import Job, MultiIndicesReindexJob, ReindexAndSyncJob, ReindexJob
 from .migration import Migration
 
 __all__ = (
     'Job',
     'Migration',
+    'MultiIndicesReindexJob',
     'ReindexJob',
     'ReindexAndSyncJob'
 )

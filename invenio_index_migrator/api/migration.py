@@ -98,83 +98,6 @@ class Migration(object):
             jobs[job_name] = job
         return jobs
 
-    def _build_jobs(self, dry_run=False):
-        """Build index mapping."""
-        def get_src(name, prefix):
-            index_name = None
-            src_alias_name = build_alias_name(name, prefix=prefix)
-            if old_client.indices.exists(src_alias_name):
-                index_name = src_alias_name
-                if old_client.indices.exists_alias(
-                        index='*', name=src_alias_name):
-                    indexes = list(old_client.indices.get_alias(
-                        name=src_alias_name).keys())
-                    if len(indexes) > 1:
-                        raise Exception(
-                            'Multiple indexes found for alias {}.'.format(
-                                src_alias_name))
-                    index_name = indexes[0]
-            else:
-                raise Exception(
-                    "alias or index ({}) doesn't exist".format(src_alias_name)
-                )
-            return dict(
-                index=index_name,
-            )
-
-        def find_aliases_for_index(index_name, aliases):
-            """Find all aliases for a given index."""
-            if isinstance(aliases, str):
-                return None
-            for key, values in aliases.items():
-                if key == index_name:
-                    return [build_alias_name(key)]
-                else:
-                    # TODO: refactoring
-                    found_aliases = find_aliases_for_index(index_name, values)
-                    if isinstance(found_aliases, list):
-                        found_aliases.append(build_alias_name(key))
-                        return found_aliases
-
-        def get_dst(name):
-            dst_index = name
-            mapping_fp = current_search.mappings[name]
-            dst_index_aliases = find_aliases_for_index(
-                name, current_search.aliases) or []
-            return dict(
-                index=dst_index,
-                aliases=dst_index_aliases,
-                mapping=mapping_fp,
-                doc_type=extract_doctype_from_mapping(mapping_fp),
-            )
-
-        old_client = self.src_es_client.client
-        jobs = {}
-        for job_name, job_config in self.config['jobs'].items():
-            index = job_config['index']
-            initial_state = dict(
-                type="job",
-                name=job_name,
-                status='INITIAL',
-                migration_id=self.name,
-                config=job_config,
-                pid_type=job_config['pid_type'],
-                src=get_src(index, self.src_es_client.config.get('prefix')),
-                dst=get_dst(index),
-                last_record_update=None,
-                reindex_task_id=None,
-                threshold_reached=False,
-                rollover_threshold=job_config['rollover_threshold'],
-                rollover_ready=False,
-                rollover_finished=False,
-                stats={},
-                reindex_params=job_config.get('reindex_params', {})
-            )
-            job = obj_or_import_string(job_config['cls'])(
-                job_name, self, config=job_config)
-            jobs[job_name] = (job, initial_state)
-        return jobs
-
     def create_index(self):
         """Create Elasticsearch index for the migration."""
         current_search_client.indices.create(index=self.index)
@@ -194,7 +117,13 @@ class Migration(object):
                 pass
 
         # Get old indices
-        self.jobs = self._build_jobs(dry_run=dry_run)
+        jobs = {}
+        for job_name, job_config in self.config['jobs'].items():
+            job = obj_or_import_string(job_config['cls'])(
+                job_name, self, config=job_config)
+            initial_state = job.initial_state(dry_run=dry_run)
+            jobs[job_name] = (job, initial_state)
+        self.jobs = jobs
 
         if not dry_run:
             migration_initial_state = {
@@ -216,17 +145,7 @@ class Migration(object):
 
         if self.state.read()['status'] == 'COMPLETED':
             for job in self.jobs.values():
-                state = job.state.read()
-                for alias in state["dst"]["aliases"]:
-                    if self.strategy == Migration.IN_CLUSTER_STRATEGY:
-                        payload["actions"].append({
-                            "remove": {
-                                "index": state["src"]["index"], "alias": alias}
-                        })
-                    payload["actions"].append({
-                        "add": {
-                            "index": state["dst"]["index"], "alias": alias}
-                    })
+                payload['actions'] += job.rollover_actions()
             current_search_client.indices.update_aliases(body=payload)
         else:
             print('Not all jobs are completed - rollover not possible.')
