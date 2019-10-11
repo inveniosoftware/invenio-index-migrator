@@ -10,24 +10,16 @@
 
 from __future__ import absolute_import, print_function
 
-import json
-import warnings
+import six
 from datetime import datetime
 
-from elasticsearch import VERSION as ES_VERSION
-from elasticsearch.exceptions import NotFoundError
-from flask import current_app
-from invenio_search.api import RecordsSearch
 from invenio_search.proxies import current_search, current_search_client
 from invenio_search.utils import build_alias_name, build_index_name, \
     prefix_index
-from six import string_types
-from werkzeug.utils import cached_property
 
 from ..indexer import SYNC_INDEXER_MQ_QUEUE, MigrationIndexer
-from ..tasks import run_sync_job
-from ..utils import ESClient, State, extract_doctype_from_mapping, \
-    get_queue_size, obj_or_import_string
+from ..utils import State, extract_doctype_from_mapping, \
+    get_queue_size
 
 
 class Job(object):
@@ -211,12 +203,22 @@ class MultiIndicesReindexJob(Job):
         """Build job's initial state."""
         old_client = self.migration.src_es_client.client
         index = self.config['index']
+        prefix = self.config.get('src_es_client', {}).get('prefix')
 
         reindex_params = self.config.get('reindex_params', {})
         source_params = reindex_params.pop('source', {})
         source_index = source_params.get('index') or index
         dest_params = reindex_params.pop('dest', {})
         dest_index = dest_params.get('index') or index
+
+        if prefix:
+            if isinstance(source_index, six.string_types):
+                source_index = prefix + source_index
+            source_indices = []
+            for sindex in source_index:
+                source_indices.append(prefix + sindex)
+            source_index = source_indices
+
         initial_state = dict(
             type="job",
             name=self.name,
