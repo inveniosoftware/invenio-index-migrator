@@ -10,10 +10,12 @@
 
 import json
 
+import requests
 import six
 from celery import current_app as current_celery_app
 from invenio_search.proxies import current_search_client
 from invenio_search.utils import build_alias_name
+from six.moves.urllib.parse import urljoin
 from werkzeug.utils import cached_property, import_string
 
 from .indexer import SYNC_INDEXER_MQ_QUEUE
@@ -56,6 +58,57 @@ def get_queue_size(queue):
     return size
 
 
+class CustomESClient(object):
+    """."""
+
+    def __init__(self, host, port, http_auth, ssl, verify_certs):
+        """."""
+        self.verify_certs = verify_certs
+        if ssl:
+            protocol = 'https'
+        else:
+            protocol = 'http'
+        self.base_url = '{0}://{1}@{2}:{3}/'.format(
+            protocol, http_auth, host, port)
+
+    def count(self, index=None):
+        """."""
+        if index:
+            req = requests.get(
+                urljoin(self.base_url, '{0}/_count'.format(index)),
+                verify=self.verify_certs)
+        else:
+            req = requests.get(
+                urljoin(self.base_url, '_count'), verify=self.verify_certs)
+        return req.json()
+
+    def index_exists(self, index):
+        """."""
+        req = requests.head(
+            urljoin(self.base_url, '{0}'.format(index)),
+            verify=self.verify_certs)
+        if req.status_code == 200:
+            return True
+        else:
+            False
+
+    def alias_exists(self, alias):
+        """."""
+        req = requests.head(
+            urljoin(self.base_url, '_alias/{0}'.format(alias)),
+            verify=self.verify_certs)
+        if req.status_code == 200:
+            return True
+        else:
+            False
+
+    def get_indexes_from_alias(self, alias):
+        """."""
+        return requests.get(
+            urljoin(self.base_url, '*/_alias/{0}'.format(alias)),
+            verify=self.verify_certs).json()
+
+
 class ESClient():
     """ES clinet for sync jobs."""
 
@@ -66,13 +119,12 @@ class ESClient():
     @cached_property
     def reindex_remote(self):
         """Return ES client reindex API host."""
-        client = self.client.transport.hosts[0]
         params = {}
-        params['host'] = client.get('host', 'localhost')
-        params['port'] = client.get('port', 9200)
+        params['host'] = self.config['params'].get('host', 'localhost')
+        params['port'] = self.config['params'].get('port', 9200)
         params['protocol'] = 'https' \
-            if client.get('use_ssl', False) else 'http'
-        params['url_prefix'] = client.get('url_prefix', '')
+            if self.config['params'].get('use_ssl', False) else 'http'
+        params['url_prefix'] = self.config['params'].get('url_prefix', '')
 
         remote = dict(
             host='{protocol}://{host}:{port}/{url_prefix}'.format(**params)
@@ -90,8 +142,7 @@ class ESClient():
         """Return username and password for reindex HTTP authentication."""
         username, password = None, None
 
-        client = self.client.transport.hosts[0]
-        http_auth = client.get('http_auth', None)
+        http_auth = self.config['params'].get('http_auth', None)
         if http_auth:
             if isinstance(http_auth, six.string_types):
                 username, password = http_auth.split(':')
@@ -103,25 +154,14 @@ class ESClient():
     @cached_property
     def client(self):
         """Return ES client."""
-        return self._get_es_client()
-
-    def _get_es_client(self):
-        """Get ES client."""
-        if self.config['version'] == 2:
-            from elasticsearch2 import Elasticsearch as Elasticsearch2
-            return Elasticsearch2([self.config['params']])
-        elif self.config['version'] == 5:
-            from elasticsearch5 import Elasticsearch as Elasticsearch5
-            return Elasticsearch5([self.config['params']])
-        elif self.config['version'] == 6:
-            from elasticsearch6 import Elasticsearch as Elasticsearch6
-            return Elasticsearch6([self.config['params']])
-        elif self.config['version'] == 7:
-            from elasticsearch import Elasticsearch
-            return Elasticsearch([self.config['params']])
-        else:
-            raise Exception('unsupported ES version: {}'.format(
-                self.config['version']))
+        params = self.config['params']
+        return CustomESClient(
+            http_auth=params['http_auth'],
+            host=params['host'],
+            port=params['port'],
+            ssl=params['use_ssl'],
+            verify_certs=params['verify_certs']
+        )
 
 
 class State(object):
