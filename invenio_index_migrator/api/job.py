@@ -320,17 +320,17 @@ class ReindexJob(Job):
         def get_src(name, prefix):
             index_name = None
             src_alias_name = build_alias_name(name, prefix=prefix)
-            if old_client.indices.exists(src_alias_name):
+            if old_client.index_exists(src_alias_name):
                 index_name = src_alias_name
-                if old_client.indices.exists_alias(
-                        index='*', name=src_alias_name):
-                    indices = list(old_client.indices.get_alias(
-                        name=src_alias_name).keys())
-                    if len(indices) > 1:
+                if old_client.alias_exists(
+                        alias=src_alias_name):
+                    indexes = list(old_client.get_indexes_from_alias(
+                        alias=src_alias_name).keys())
+                    if len(indexes) > 1:
                         raise Exception(
                             'Multiple indexes found for alias {}.'.format(
                                 src_alias_name))
-                    index_name = indices[0]
+                    index_name = indexes[0]
             else:
                 raise Exception(
                     "alias or index ({}) doesn't exist".format(src_alias_name)

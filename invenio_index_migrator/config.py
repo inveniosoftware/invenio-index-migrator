@@ -15,6 +15,7 @@ from __future__ import absolute_import, print_function
 # specific place, it might be simplified in a boolean or extended for other
 # uses in the migration/jobs.
 INDEX_MIGRATOR_RECIPES = {}
+
 """Index sync job definitions.
 
 Example:
