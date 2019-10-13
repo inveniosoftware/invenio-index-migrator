@@ -57,6 +57,7 @@ class Job(object):
         """Cancel the job."""
         raise NotImplementedError()
 
+    # TODO: Define the attributes and values of the returned dict
     def status(self):
         """Return the status of the job."""
         job_state = self.state.read()
@@ -78,8 +79,7 @@ class Job(object):
                 current['duration'] = '{:.1f} second(s)'.format(
                     task['task']['running_time_in_nanos'] / 1000000000.0)
                 current['current'] = current_search_client.count(
-                    index=job_state['dst']['index']
-                )['count']
+                    index=job_state['dst']['index'])
                 if current['total'] > 0:
                     current['percent'] = \
                         100.0 * current['current'] / current['total']
@@ -90,6 +90,7 @@ class Job(object):
         current['threshold_reached'] = job_state['threshold_reached']
         return current
 
+    # TODO:
     def create_index(self, index):
         """Create indexes needed for the job."""
         index_result, _ = current_search.create_index(
@@ -98,15 +99,10 @@ class Job(object):
         )
         index_name = index_result[0]
         refresh_interval = self.config.get('refresh_interval', '-1')
-        if refresh_interval:
-            current_search_client.indices.put_settings(
-                index=index_name,
-                body=dict(
-                    index=dict(
-                        refresh_interval=refresh_interval
-                    )
-                )
-            )
+        current_search_client.indices.put_settings(
+            index=index_name,
+            body=dict(index=dict(refresh_interval=refresh_interval))
+        )
         print('[*] created index: {}'.format(index_name))
 
         state = self.state.read()
@@ -115,137 +111,26 @@ class Job(object):
 
     def rollover_actions(self):
         actions = []
+        state = self.state.read()
+        src_index = state["src"]["index"]
+        dst_index = state["dst"]["index"]
 
-        for alias in self.state["dst"]["aliases"]:
+        # Reset the "refresh_interval" setting for the destination index
+        current_search_client.indices.put_settings(
+            index=dst_index,
+            body=dict(index=dict(refresh_interval=None))
+        )
+        # Preform a "flush + refresh" before rolling over the aliases
+        current_search_client.indices.flush(
+            wait_if_ongoing=True, index=dst_index)
+        current_search_client.indices.refresh(index=dst_index)
+
+        for alias in state["dst"]["aliases"]:
             if self.strategy == self.migration.IN_CLUSTER_STRATEGY:
-                actions.append({
-                    "remove": {
-                        "index": self.state["src"]["index"], "alias": alias}
-                })
-            actions.append({
-                "add": {
-                    "index": self.state["dst"]["index"], "alias": alias}
-            })
+                actions.append(
+                    {"remove": {"index": src_index, "alias": alias}})
+            actions.append({"add": {"index": dst_index, "alias": alias}})
         return actions
-
-
-# FIXME: extract the common code into external methods
-class MultiIndicesReindexJob(Job):
-    """Reindex job that uses Elasticsearch's reindex API."""
-
-    def run(self):
-        """Fetch source index using ES Reindex API."""
-        print('[*] running reindex for templates')
-        reindex_params = self.config.get('reindex_params', {})
-        source_params = reindex_params.pop('source', {})
-        dest_params = reindex_params.pop('dest', {})
-
-        state = self.state.read()
-        payload = dict(
-            source=dict(
-                index=state['src']['index'],
-                **source_params
-            ),
-            dest=dict(
-                index='',
-                version_type='external_gte',
-                **dest_params
-            ),
-            **reindex_params
-        )
-        if self.migration.strategy == self.migration.CROSS_CLUSTER_STRATEGY:
-            payload['source']['remote'] = \
-                self.migration.src_es_client.reindex_remote
-
-        current_search.put_templates(ignore=[400, 404])
-        # Reindex using ES Reindex API synchronously
-        # Keep track of the time we issued the reindex command
-        start_date = datetime.utcnow()
-        wait_for_completion = self.config.get('wait_for_completion', False)
-        response = current_search_client.reindex(
-            wait_for_completion=wait_for_completion,
-            body=payload
-        )
-        state['stats']['total'] = self.migration.src_es_client.client.count(
-            index=state['src']['index']
-        )['count']
-        state['last_record_update'] = str(start_date)
-        task_id = response.get('task', None)
-        state['reindex_task_id'] = task_id
-        if wait_for_completion:
-            if response.get('timed_out') or len(response['failures']) > 0:
-                state['status'] = 'FAILED'
-            else:
-                state['threshold_reached'] = True
-                state['status'] = 'COMPLETED'
-        self.state.commit(state)
-        print('reindex task started: {}'.format(task_id))
-        return state
-
-    def cancel(self):
-        """Cancel reindexing job."""
-        state = self.state.read()
-        task_id = state['reindex_task_id']
-        cancel_response = current_search_client.tasks.cancel(task_id)
-        if cancel_response.get('timed_out') or \
-            len(cancel_response.get('failures', [])) > 0:
-            state['status'] = 'FAILED'
-        else:
-            state['status'] = 'CANCELLED'
-
-        self.state.commit(state)
-        if 'node_failures' in cancel_response:
-            print('failed to cancel task', cancel_response)
-        else:
-            print('- successfully cancelled task: {}'.format(task_id))
-
-    def initial_state(self, dry_run=False):
-        """Build job's initial state."""
-        old_client = self.migration.src_es_client.client
-        index = self.config['index']
-        prefix = self.config.get('src_es_client', {}).get('prefix')
-
-        reindex_params = self.config.get('reindex_params', {})
-        source_params = reindex_params.pop('source', {})
-        source_index = source_params.get('index') or index
-        dest_params = reindex_params.pop('dest', {})
-        dest_index = dest_params.get('index') or index
-
-        if prefix:
-            if isinstance(source_index, six.string_types):
-                source_index = prefix + source_index
-            source_indices = []
-            for sindex in source_index:
-                source_indices.append(prefix + sindex)
-            source_index = source_indices
-
-        initial_state = dict(
-            type="job",
-            name=self.name,
-            status='INITIAL',
-            migration_id=self.name,
-            config=self.config,
-            pid_type=self.config['pid_type'],
-            src=dict(
-                index=source_index,
-            ),
-            dst=dict(index=dest_index),
-            last_record_update=None,
-            reindex_task_id=None,
-            threshold_reached=False,
-            rollover_threshold=self.config['rollover_threshold'],
-            rollover_ready=False,
-            rollover_finished=False,
-            stats={},
-            reindex_params=self.config.get('reindex_params', {})
-        )
-        return initial_state
-
-    def create_index(self, index):
-        pass
-
-    def rollover_actions(self):
-        return []
 
 
 class ReindexJob(Job):
@@ -285,8 +170,7 @@ class ReindexJob(Job):
             body=payload
         )
         state['stats']['total'] = self.migration.src_es_client.client.count(
-            index=state['src']['index']
-        )['count']
+            index=state['src']['index'])
         state['last_record_update'] = str(start_date)
         task_id = response.get('task', None)
         state['reindex_task_id'] = task_id
@@ -478,3 +362,125 @@ class ReindexAndSyncJob(ReindexJob):
     def cancel(self):
         """Cancel reinding and syncing job."""
         super(ReindexAndSyncJob, self).cancel()
+
+
+# FIXME: extract common code into parent class methods
+class MultiIndicesReindexJob(Job):
+    """Reindex job that uses Elasticsearch's reindex API."""
+
+    def run(self):
+        """Fetch source index using ES Reindex API."""
+        print('[*] running reindex for templates')
+        reindex_params = self.config.get('reindex_params', {})
+        source_params = reindex_params.pop('source', {})
+        dest_params = reindex_params.pop('dest', {})
+
+        state = self.state.read()
+        payload = dict(
+            source=dict(
+                index=state['src']['index'],
+                **source_params
+            ),
+            dest=dict(
+                index=state['dst']['index'],
+                version_type='external_gte',
+                **dest_params
+            ),
+            **reindex_params
+        )
+        if self.migration.strategy == self.migration.CROSS_CLUSTER_STRATEGY:
+            payload['source']['remote'] = \
+                self.migration.src_es_client.reindex_remote
+
+        # Make sure needed templates are there
+
+        # Keep track of the time we issued the reindex command
+        start_date = datetime.utcnow()
+        # Reindex using ES Reindex API synchronously
+        wait_for_completion = self.config.get('wait_for_completion', False)
+        response = current_search_client.reindex(
+            wait_for_completion=wait_for_completion,
+            body=payload
+        )
+        state['stats']['total'] = self.migration.src_es_client.client.count(
+            index=state['src']['index'])
+        state['last_record_update'] = str(start_date)
+        task_id = response.get('task', None)
+        state['reindex_task_id'] = task_id
+        if wait_for_completion:
+            if response.get('timed_out') or len(response['failures']) > 0:
+                state['status'] = 'FAILED'
+            else:
+                state['threshold_reached'] = True
+                state['status'] = 'COMPLETED'
+        self.state.commit(state)
+        print('reindex task started: {}'.format(task_id))
+        return state
+
+    def cancel(self):
+        """Cancel reindexing job."""
+        state = self.state.read()
+        task_id = state['reindex_task_id']
+        cancel_response = current_search_client.tasks.cancel(task_id)
+        if cancel_response.get('timed_out') or \
+            len(cancel_response.get('failures', [])) > 0:
+            state['status'] = 'FAILED'
+        else:
+            state['status'] = 'CANCELLED'
+
+        self.state.commit(state)
+        if 'node_failures' in cancel_response:
+            print('failed to cancel task', cancel_response)
+        else:
+            print('- successfully cancelled task: {}'.format(task_id))
+
+    def initial_state(self, dry_run=False):
+        """Build job's initial state."""
+        old_client = self.migration.src_es_client.client
+        index = self.config['index']
+        prefix = self.config.get('src_es_client', {}).get('prefix')
+
+        reindex_params = self.config.get('reindex_params', {})
+        source_params = reindex_params.pop('source', {})
+        source_index = source_params.get('index') or index
+        dest_params = reindex_params.pop('dest', {})
+        dest_index = dest_params.get('index') or index
+
+        if prefix:
+            if isinstance(source_index, six.string_types):
+                source_index = prefix + source_index
+            source_indices = []
+            for sindex in source_index:
+                source_indices.append(prefix + sindex)
+            source_index = source_indices
+
+        initial_state = dict(
+            type="job",
+            name=self.name,
+            status='INITIAL',
+            migration_id=self.name,
+            config=self.config,
+            pid_type=self.config['pid_type'],
+            src=dict(
+                index=source_index,
+            ),
+            dst=dict(index=dest_index),
+            last_record_update=None,
+            reindex_task_id=None,
+            threshold_reached=False,
+            rollover_threshold=self.config['rollover_threshold'],
+            rollover_ready=False,
+            rollover_finished=False,
+            stats={},
+            reindex_params=self.config.get('reindex_params', {})
+        )
+        return initial_state
+
+    def create_index(self, index):
+        # Only templates need to bre created
+        current_search.put_templates(ignore=[400, 404])
+
+    def rollover_actions(self):
+        # TODO: Investigate for in-cluster migrations what kind of rollover
+        # actions are needed
+        return []
