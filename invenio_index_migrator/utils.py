@@ -58,21 +58,20 @@ def get_queue_size(queue):
     return size
 
 
-class CustomESClient(object):
-    """."""
+# NOTE: This is a requests-only client for some read-only operations on
+# Elasticsearch clusters.
+class _BasicESClient(object):
+    """Stripped-down basic ES client."""
 
-    def __init__(self, host, port, http_auth, ssl, verify_certs):
+    def __init__(self, host, port, http_auth, use_ssl, verify_certs):
         """."""
         self.verify_certs = verify_certs
-        if ssl:
-            protocol = 'https'
-        else:
-            protocol = 'http'
+        protocol = 'https' if ssl else 'http'
         self.base_url = '{0}://{1}@{2}:{3}/'.format(
             protocol, http_auth, host, port)
 
-    def count(self, index=None):
-        """."""
+    def count(self, index):
+        """Get the document count of an index."""
         if index:
             req = requests.get(
                 urljoin(self.base_url, '{0}/_count'.format(index)),
@@ -80,36 +79,30 @@ class CustomESClient(object):
         else:
             req = requests.get(
                 urljoin(self.base_url, '_count'), verify=self.verify_certs)
-        return req.json()
+        return req.json()['count']
 
     def index_exists(self, index):
-        """."""
+        """Check if an index/alias exists."""
         req = requests.head(
             urljoin(self.base_url, '{0}'.format(index)),
             verify=self.verify_certs)
-        if req.status_code == 200:
-            return True
-        else:
-            False
+        return req.status_code == 200
 
     def alias_exists(self, alias):
-        """."""
+        """Check if an alias exists."""
         req = requests.head(
             urljoin(self.base_url, '_alias/{0}'.format(alias)),
             verify=self.verify_certs)
-        if req.status_code == 200:
-            return True
-        else:
-            False
+        return req.status_code == 200
 
     def get_indexes_from_alias(self, alias):
-        """."""
+        """Get the indices of an alias."""
         return requests.get(
             urljoin(self.base_url, '*/_alias/{0}'.format(alias)),
             verify=self.verify_certs).json()
 
 
-class ESClient():
+class ESClient(object):
     """ES clinet for sync jobs."""
 
     def __init__(self, es_config):
@@ -155,11 +148,11 @@ class ESClient():
     def client(self):
         """Return ES client."""
         params = self.config['params']
-        return CustomESClient(
+        return _BasicESClient(
             http_auth=params['http_auth'],
             host=params['host'],
             port=params['port'],
-            ssl=params['use_ssl'],
+            use_ssl=params['use_ssl'],
             verify_certs=params['verify_certs']
         )
 
