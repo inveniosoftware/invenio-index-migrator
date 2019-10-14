@@ -66,7 +66,7 @@ class _BasicESClient(object):
     def __init__(self, host, port, http_auth, use_ssl, verify_certs):
         """."""
         self.verify_certs = verify_certs
-        protocol = 'https' if ssl else 'http'
+        protocol = 'https' if use_ssl else 'http'
         self.base_url = '{0}://{1}@{2}:{3}/'.format(
             protocol, http_auth, host, port)
 
