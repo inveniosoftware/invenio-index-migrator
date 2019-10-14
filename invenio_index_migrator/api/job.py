@@ -79,7 +79,7 @@ class Job(object):
                 current['duration'] = '{:.1f} second(s)'.format(
                     task['task']['running_time_in_nanos'] / 1000000000.0)
                 current['current'] = current_search_client.count(
-                    index=job_state['dst']['index'])
+                    index=job_state['dst']['index'])['count']
                 if current['total'] > 0:
                     current['percent'] = \
                         100.0 * current['current'] / current['total']
@@ -98,7 +98,7 @@ class Job(object):
             create_write_alias=False
         )
         index_name = index_result[0]
-        refresh_interval = self.config.get('refresh_interval', '-1')
+        refresh_interval = self.config.get('refresh_interval', '300s')
         current_search_client.indices.put_settings(
             index=index_name,
             body=dict(index=dict(refresh_interval=refresh_interval))
