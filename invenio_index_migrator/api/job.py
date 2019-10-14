@@ -110,6 +110,7 @@ class Job(object):
         self.state.commit(state)
 
     def rollover_actions(self):
+        """Rollover actions."""
         actions = []
         state = self.state.read()
         src_index = state["src"]["index"]
@@ -376,13 +377,16 @@ class MultiIndicesReindexJob(Job):
         dest_params = reindex_params.pop('dest', {})
 
         state = self.state.read()
+        dest_index = dest_params.pop('index', "") or state['dst']['index']
+        # note that 'dest' does not support an array, so we have to pass a string
+
         payload = dict(
             source=dict(
                 index=state['src']['index'],
                 **source_params
             ),
             dest=dict(
-                index=state['dst']['index'],
+                index=dest_index,
                 version_type='external_gte',
                 **dest_params
             ),
@@ -440,19 +444,13 @@ class MultiIndicesReindexJob(Job):
         index = self.config['index']
         prefix = self.config.get('src_es_client', {}).get('prefix')
 
-        reindex_params = self.config.get('reindex_params', {})
-        source_params = reindex_params.pop('source', {})
-        source_index = source_params.get('index') or index
-        dest_params = reindex_params.pop('dest', {})
-        dest_index = dest_params.get('index') or index
-
         if prefix:
-            if isinstance(source_index, six.string_types):
-                source_index = prefix + source_index
+            if isinstance(index, six.string_types):
+                index = prefix + index
             source_indices = []
-            for sindex in source_index:
+            for sindex in index:
                 source_indices.append(prefix + sindex)
-            source_index = source_indices
+            index = source_indices
 
         initial_state = dict(
             type="job",
@@ -462,9 +460,9 @@ class MultiIndicesReindexJob(Job):
             config=self.config,
             pid_type=self.config['pid_type'],
             src=dict(
-                index=source_index,
+                index=index,
             ),
-            dst=dict(index=dest_index),
+            dst=dict(index=index),
             last_record_update=None,
             reindex_task_id=None,
             threshold_reached=False,
@@ -477,10 +475,12 @@ class MultiIndicesReindexJob(Job):
         return initial_state
 
     def create_index(self, index):
+        """Create templates."""
         # Only templates need to bre created
         current_search.put_templates(ignore=[400, 404])
 
     def rollover_actions(self):
+        """Rollover actions."""
         # TODO: Investigate for in-cluster migrations what kind of rollover
         # actions are needed
         return []
