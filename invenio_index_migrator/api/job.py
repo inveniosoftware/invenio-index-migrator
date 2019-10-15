@@ -204,27 +204,24 @@ class ReindexJob(Job):
 
     def initial_state(self, dry_run=False):
         """Build job's initial state."""
-        def get_src(name, prefix):
-            index_name = None
-            src_alias_name = build_alias_name(name, prefix=prefix)
-            if old_client.index_exists(src_alias_name):
-                index_name = src_alias_name
-                if old_client.alias_exists(
-                        alias=src_alias_name):
-                    indexes = list(old_client.get_indexes_from_alias(
-                        alias=src_alias_name).keys())
-                    if len(indexes) > 1:
-                        raise Exception(
-                            'Multiple indexes found for alias {}.'.format(
-                                src_alias_name))
-                    index_name = indexes[0]
-            else:
+        old_client = self.migration.src_es_client.client
+        index = self.config['index']
+
+        src_prefix = self.migration.src_es_client.config.get('prefix')
+        src_alias_name = build_alias_name(index, prefix=src_prefix)
+        if old_client.index_exists(src_alias_name) and old_client.alias_exists(
+                    alias=src_alias_name):
+            indexes = list(old_client.get_indexes_from_alias(
+                alias=src_alias_name).keys())
+            if len(indexes) > 1:
                 raise Exception(
-                    "alias or index ({}) doesn't exist".format(src_alias_name)
-                )
-            return dict(
-                index=index_name,
+                    'Multiple indexes found for alias {}.'.format(
+                        src_alias_name))
+        else:
+            raise Exception(
+                "alias or index ({}) doesn't exist".format(src_alias_name)
             )
+        src_state = dict(index=src_alias_name)
 
         def find_aliases_for_index(index_name, aliases):
             """Find all aliases for a given index."""
@@ -240,20 +237,16 @@ class ReindexJob(Job):
                         found_aliases.append(build_alias_name(key))
                         return found_aliases
 
-        def get_dst(name):
-            dst_index = name
-            mapping_fp = current_search.mappings[name]
-            dst_index_aliases = find_aliases_for_index(
-                name, current_search.aliases) or []
-            return dict(
-                index=dst_index,
-                aliases=dst_index_aliases,
-                mapping=mapping_fp,
-                doc_type=extract_doctype_from_mapping(mapping_fp),
-            )
+        mapping_fp = current_search.mappings[index]
+        dst_index_aliases = find_aliases_for_index(
+            index, current_search.aliases) or []
+        dst_state = dict(
+            index=index,
+            aliases=dst_index_aliases,
+            mapping=mapping_fp,
+            doc_type=extract_doctype_from_mapping(mapping_fp),
+        )
 
-        old_client = self.migration.src_es_client.client
-        index = self.config['index']
         initial_state = dict(
             type="job",
             name=self.name,
@@ -261,9 +254,8 @@ class ReindexJob(Job):
             migration_id=self.name,
             config=self.config,
             pid_type=self.config['pid_type'],
-            src=get_src(
-                index, self.migration.src_es_client.config.get('prefix')),
-            dst=get_dst(index),
+            src=src_state,
+            dst=dst_state,
             last_record_update=None,
             reindex_task_id=None,
             threshold_reached=False,
@@ -459,9 +451,7 @@ class MultiIndicesReindexJob(Job):
             migration_id=self.name,
             config=self.config,
             pid_type=self.config['pid_type'],
-            src=dict(
-                index=index,
-            ),
+            src=dict(index=index),
             dst=dict(index=index),
             last_record_update=None,
             reindex_task_id=None,
