@@ -138,12 +138,12 @@ class Migration(object):
                 job.state.commit(initial_state)
                 job.create_index(initial_state["dst"]["index"])
 
-    def rollover(self):
+    def rollover(self, force=False):
         """Perform a rollover action."""
         payload = dict(actions=[])
         self.jobs = self.load_jobs_from_config()
 
-        if self.state.read()['status'] == 'COMPLETED':
+        if force or self.state.read()['status'] == 'COMPLETED':
             for job in self.jobs.values():
                 payload['actions'] += job.rollover_actions()
             current_search_client.indices.update_aliases(body=payload)

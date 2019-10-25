@@ -74,11 +74,12 @@ def run_migration(recipe_id):
 @migration.command('rollover')
 @with_appcontext
 @click.argument('recipe_id')
-def rollover_sync(recipe_id):
+@click.option('--force', '-f', default=False, is_flag=True)
+def rollover_sync(recipe_id, force=False):
     """Perform the index syncing rollover action."""
     recipe_config = current_index_migrator.recipes[recipe_id]
     migration_recipe = recipe_config['cls'].create_from_state(recipe_id)
-    migration_recipe.rollover()
+    migration_recipe.rollover(force=force)
 
 
 @migration.command('status')
