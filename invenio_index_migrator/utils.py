@@ -72,13 +72,11 @@ class _BasicESClient(object):
 
     def count(self, index):
         """Get the document count of an index."""
-        if index:
-            req = requests.get(
-                urljoin(self.base_url, '{0}/_count'.format(index)),
-                verify=self.verify_certs)
-        else:
-            req = requests.get(
-                urljoin(self.base_url, '_count'), verify=self.verify_certs)
+        if isinstance(index, list):
+            index = ','.join(index)
+        req = requests.get(
+            urljoin(self.base_url, '{0}/_count'.format(index)),
+            verify=self.verify_certs)
         return req.json()['count']
 
     def index_exists(self, index):
