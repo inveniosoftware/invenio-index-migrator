@@ -127,7 +127,7 @@ class Job(object):
         current_search_client.indices.refresh(index=dst_index)
 
         for alias in state["dst"]["aliases"]:
-            if self.strategy == self.migration.IN_CLUSTER_STRATEGY:
+            if self.migration.strategy == self.migration.IN_CLUSTER_STRATEGY:
                 actions.append(
                     {"remove": {"index": src_index, "alias": alias}})
             actions.append({"add": {"index": dst_index, "alias": alias}})
@@ -144,18 +144,12 @@ class ReindexJob(Job):
         reindex_params = self.config.get('reindex_params', {})
         source_params = reindex_params.pop('source', {})
         dest_params = reindex_params.pop('dest', {})
+        dest_params.setdefault('version_type', 'external_gte')
 
         state = self.state.read()
         payload = dict(
-            source=dict(
-                index=state['src']['index'],
-                **source_params
-            ),
-            dest=dict(
-                index=state['dst']['index'],
-                version_type='external',
-                **dest_params
-            ),
+            source=dict(index=state['src']['index'], **source_params),
+            dest=dict(index=state['dst']['index'], **dest_params),
             **reindex_params
         )
         if self.migration.strategy == self.migration.CROSS_CLUSTER_STRATEGY:
@@ -367,28 +361,24 @@ class MultiIndicesReindexJob(Job):
         reindex_params = self.config.get('reindex_params', {})
         source_params = reindex_params.pop('source', {})
         dest_params = reindex_params.pop('dest', {})
+        dest_params.pop('index', '')
 
         state = self.state.read()
-        dest_index = dest_params.pop('index', "") or state['dst']['index']
-        # note that 'dest' does not support an array, so we have to pass a string
+        src_index = state['src']['index']
+        dst_index = state['dst']['index']
+        if not isinstance(dst_index, six.string_types):
+            raise Exception(u'"dest.index" has to be a string, and not {}'
+                .format(dst_index))
+        dest_params.setdefault('version_type', 'external_gte')
 
         payload = dict(
-            source=dict(
-                index=state['src']['index'],
-                **source_params
-            ),
-            dest=dict(
-                index=dest_index,
-                version_type='external_gte',
-                **dest_params
-            ),
+            source=dict(index=src_index, **source_params),
+            dest=dict(index=dst_index, **dest_params),
             **reindex_params
         )
         if self.migration.strategy == self.migration.CROSS_CLUSTER_STRATEGY:
             payload['source']['remote'] = \
                 self.migration.src_es_client.reindex_remote
-
-        # Make sure needed templates are there
 
         # Keep track of the time we issued the reindex command
         start_date = datetime.utcnow()
@@ -413,36 +403,20 @@ class MultiIndicesReindexJob(Job):
         print('reindex task started: {}'.format(task_id))
         return state
 
-    def cancel(self):
-        """Cancel reindexing job."""
-        state = self.state.read()
-        task_id = state['reindex_task_id']
-        cancel_response = current_search_client.tasks.cancel(task_id)
-        if cancel_response.get('timed_out') or \
-            len(cancel_response.get('failures', [])) > 0:
-            state['status'] = 'FAILED'
-        else:
-            state['status'] = 'CANCELLED'
-
-        self.state.commit(state)
-        if 'node_failures' in cancel_response:
-            print('failed to cancel task', cancel_response)
-        else:
-            print('- successfully cancelled task: {}'.format(task_id))
-
     def initial_state(self, dry_run=False):
         """Build job's initial state."""
-        old_client = self.migration.src_es_client.client
         index = self.config['index']
-        prefix = self.config.get('src_es_client', {}).get('prefix')
+        src_prefix = self.migration.config.get('src_es_client', {}).get('prefix')
 
-        if prefix:
+        src_index = index
+        if src_prefix:
             if isinstance(index, six.string_types):
-                index = prefix + index
-            source_indices = []
-            for sindex in index:
-                source_indices.append(prefix + sindex)
-            index = source_indices
+                src_index = [index]
+            src_index = [src_prefix + i for i in src_index]
+
+        dst_index = build_alias_name(
+            self.config['reindex_params']['dest']['index'])
+
 
         initial_state = dict(
             type="job",
@@ -451,8 +425,8 @@ class MultiIndicesReindexJob(Job):
             migration_id=self.name,
             config=self.config,
             pid_type=self.config['pid_type'],
-            src=dict(index=index),
-            dst=dict(index=index),
+            src=dict(index=src_index),
+            dst=dict(index=dst_index),
             last_record_update=None,
             reindex_task_id=None,
             threshold_reached=False,
@@ -466,7 +440,7 @@ class MultiIndicesReindexJob(Job):
 
     def create_index(self, index):
         """Create templates."""
-        # Only templates need to bre created
+        # Only templates need to be created
         current_search.put_templates(ignore=[400, 404])
 
     def rollover_actions(self):
