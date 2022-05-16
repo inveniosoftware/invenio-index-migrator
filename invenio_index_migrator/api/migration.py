@@ -14,7 +14,6 @@ import json
 import warnings
 from datetime import datetime
 
-from elasticsearch import VERSION as ES_VERSION
 from elasticsearch.exceptions import NotFoundError
 from flask import current_app
 from invenio_search.api import RecordsSearch

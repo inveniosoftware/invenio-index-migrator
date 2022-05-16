@@ -47,7 +47,6 @@ from __future__ import absolute_import, print_function
 
 import os
 
-from elasticsearch import VERSION as ES_VERSION
 from elasticsearch_dsl.query import Bool, Q, QueryString
 from flask import Flask, jsonify, request
 from flask_menu import Menu
@@ -88,12 +87,12 @@ def fixtures():
     current_search_client.index(
         index='demo-default-v1.0.0',
         body={'title': 'Public', 'body': 'test 1', 'public': 1},
-        doc_type='example' if ES_VERSION[0] < 7 else '_doc'
+        doc_type='_doc'
     )
     current_search_client.index(
         index='demo-default-v1.0.0',
         body={'title': 'Private', 'body': 'test 2', 'public': 0},
-        doc_type='example' if ES_VERSION[0] < 7 else '_doc'
+        doc_type='_doc'
     )
 
 
