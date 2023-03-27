@@ -407,9 +407,6 @@ class MultiIndicesReindexJob(Job):
         for idx in src_index:
             src_index_list.extend(sorted(old_client.indices.get_alias(idx).keys()))
 
-        dst_index = build_alias_name(
-            self.config['reindex_params']['dest']['index'])
-
         initial_state = dict(
             type="job",
             name=self.name,
@@ -418,11 +415,11 @@ class MultiIndicesReindexJob(Job):
             config=self.config,
             pid_type=self.config['pid_type'],
             src=dict(index=src_index, index_list=src_index_list),
-            dst=dict(index=dst_index),
+            dst=dict(index=None),
             last_record_update=None,
             reindex_task_id=None,
             threshold_reached=False,
-            rollover_threshold=self.config['rollover_threshold'],
+            rollover_threshold=self.config.get('rollover_threshold', 10),
             rollover_ready=False,
             rollover_finished=False,
             stats={},

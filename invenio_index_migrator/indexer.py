@@ -11,7 +11,6 @@
 from __future__ import absolute_import, print_function
 
 from invenio_indexer.api import RecordIndexer
-from invenio_indexer.utils import es_bulk_param_compatibility
 from invenio_records.api import Record
 from invenio_records.models import RecordMetadata
 from kombu import Exchange, Queue
@@ -74,7 +73,6 @@ class MigrationIndexer(RecordIndexer):
             '_id': payload['id'],
         }
 
-    @es_bulk_param_compatibility
     def _index_action(self, payload):
         """Bulk index action.
 

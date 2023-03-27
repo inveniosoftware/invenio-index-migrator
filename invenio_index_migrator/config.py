@@ -35,7 +35,6 @@ Example:
                         port=9200,
                         use_ssl=True,
                         http_auth='user:pass',
-                        url_prefix='on-demand',
                     ),
                 ),
                 jobs=dict(

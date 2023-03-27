@@ -43,12 +43,19 @@ def get_queue_size(queue):
 class _BasicESClient(object):
     """Stripped-down basic ES client."""
 
-    def __init__(self, host, port, http_auth, use_ssl, verify_certs):
+    def __init__(
+            self, host=None, port=None, http_auth=None, use_ssl=False,
+            verify_certs=False, url_prefix='',
+        ):
         """."""
         self.verify_certs = verify_certs
         protocol = 'https' if use_ssl else 'http'
         self.base_url = '{0}://{1}@{2}:{3}/'.format(
             protocol, http_auth, host, port)
+        if url_prefix:
+            self.base_url += url_prefix
+            if self.base_url[-1] != '/':
+                self.base_url += '/'
 
     def count(self, index):
         """Get the document count of an index."""
@@ -125,14 +132,7 @@ class ESClient(object):
     @cached_property
     def client(self):
         """Return ES client."""
-        params = self.config['params']
-        return _BasicESClient(
-            http_auth=params['http_auth'],
-            host=params['host'],
-            port=params['port'],
-            use_ssl=params['use_ssl'],
-            verify_certs=params['verify_certs']
-        )
+        return _BasicESClient(**self.config['params'])
 
 
 class State(object):

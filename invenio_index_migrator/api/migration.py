@@ -133,7 +133,8 @@ class Migration(object):
         if force or self.state.read()['status'] == 'COMPLETED':
             for job in self.jobs.values():
                 payload['actions'] += job.rollover_actions()
-            current_search_client.indices.update_aliases(body=payload)
+            if payload["actions"]:
+                current_search_client.indices.update_aliases(body=payload)
         else:
             print('Not all jobs are completed - rollover not possible.')
 

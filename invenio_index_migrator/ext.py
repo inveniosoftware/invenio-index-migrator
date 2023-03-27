@@ -13,9 +13,10 @@ from __future__ import absolute_import, print_function
 from flask import current_app
 from werkzeug.utils import cached_property
 
+from invenio_search.utils import build_alias_name
 from . import config
 from .cli import index_cmd
-from .utils import build_alias_name, obj_or_import_string
+from .utils import obj_or_import_string
 
 
 class InvenioIndexMigrator(object):
