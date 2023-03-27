@@ -10,19 +10,17 @@
 
 from __future__ import absolute_import, print_function
 
-from datetime import datetime
-
 from invenio_indexer.api import RecordIndexer
 from invenio_indexer.utils import es_bulk_param_compatibility
 from invenio_records.api import Record
 from invenio_records.models import RecordMetadata
 from kombu import Exchange, Queue
 
-SYNC_INDEXER_MQ_EXCHANGE = Exchange('sync_indexer', type='direct')
+SYNC_INDEXER_MQ_EXCHANGE = Exchange('sync-indexer', type='direct')
 """Default exchange for message queue."""
 
 SYNC_INDEXER_MQ_QUEUE = Queue(
-    'indexer', exchange=SYNC_INDEXER_MQ_EXCHANGE, routing_key='sync-indexer')
+    'sync-indexer', exchange=SYNC_INDEXER_MQ_EXCHANGE, routing_key='sync-indexer')
 
 SYNC_INDEXER_MQ_ROUTING_KEY = 'sync-indexer'
 """Default routing key for message queue."""
@@ -69,11 +67,10 @@ class MigrationIndexer(RecordIndexer):
         :param payload: Decoded message body.
         :returns: Dictionary defining an Elasticsearch bulk 'delete' action.
         """
-        index, doc_type = payload.get('index'), payload.get('doc_type')
+        index = payload.get('index')
         return {
             '_op_type': 'delete',
             '_index': index,
-            '_type': doc_type,
             '_id': payload['id'],
         }
 
@@ -85,15 +82,14 @@ class MigrationIndexer(RecordIndexer):
         :returns: Dictionary defining an Elasticsearch bulk 'index' action.
         """
         record = self._get_record(payload)
-        index, doc_type = payload.get('index'), payload.get('doc_type')
+        index = payload.get('index')
 
         arguments = {}
-        body = self._prepare_record(record, index, doc_type, arguments)
+        body = self._prepare_record(record, index, '_doc', arguments)
 
         action = {
             '_op_type': 'index',
             '_index': index,
-            '_type': doc_type,
             '_id': str(record.id),
             '_version': record.revision_id,
             '_version_type': self._version_type,

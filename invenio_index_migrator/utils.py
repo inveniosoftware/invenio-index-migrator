@@ -8,17 +8,12 @@
 
 """Utility functions for index migration."""
 
-import json
-
 import requests
 import six
 from celery import current_app as current_celery_app
 from invenio_search.proxies import current_search_client
-from invenio_search.utils import build_alias_name
 from six.moves.urllib.parse import urljoin
 from werkzeug.utils import cached_property, import_string
-
-from .indexer import SYNC_INDEXER_MQ_QUEUE
 
 
 def obj_or_import_string(value, default=None):
@@ -33,21 +28,6 @@ def obj_or_import_string(value, default=None):
     elif value:
         return value
     return default
-
-
-def extract_doctype_from_mapping(mapping_fp):
-    """Extract the doc_type from mapping filepath."""
-    from elasticsearch import VERSION as ES_VERSION
-
-    lt_es7 = ES_VERSION[0] < 7
-    _doc_type = None
-    if lt_es7:
-        with open(mapping_fp, 'r') as mapping_file:
-            mapping = json.loads(mapping_file.read())
-            _doc_type = mapping[list(mapping.keys())[0]]
-    else:
-        _doc_type = '_doc'
-    return _doc_type
 
 
 def get_queue_size(queue):
@@ -166,14 +146,12 @@ class State(object):
         """Synchronization job state in ElasticSearch."""
         self.index = index
         self.document_id = document_id
-        self.doc_type = '_doc'
         self.client = client or current_search_client
 
     def read(self):
         """Fetch the current state from Elasticsearch."""
         return self.client.get(
             index=self.index,
-            doc_type=self.doc_type,
             id=self.document_id,
             ignore=[404],
         )['_source']
@@ -192,6 +170,5 @@ class State(object):
         return self.client.index(
             index=self.index,
             id=self.document_id,
-            doc_type=self.doc_type,
             body=state
         )

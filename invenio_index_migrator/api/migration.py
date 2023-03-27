@@ -10,25 +10,12 @@
 
 from __future__ import absolute_import, print_function
 
-import json
-import warnings
-from datetime import datetime
-
-from elasticsearch import VERSION as ES_VERSION
 from elasticsearch.exceptions import NotFoundError
-from flask import current_app
-from invenio_search.api import RecordsSearch
-from invenio_search.proxies import current_search, current_search_client
-from invenio_search.utils import build_alias_name, build_index_name, \
-    prefix_index
-from six import string_types
+from invenio_search.proxies import current_search_client
 from werkzeug.utils import cached_property
 
-from ..indexer import SYNC_INDEXER_MQ_QUEUE, MigrationIndexer
 from ..proxies import current_index_migrator
-from ..tasks import run_sync_job
-from ..utils import ESClient, State, extract_doctype_from_mapping, \
-    get_queue_size, obj_or_import_string
+from ..utils import ESClient, State, obj_or_import_string
 
 
 def ensure_valid_config(f):

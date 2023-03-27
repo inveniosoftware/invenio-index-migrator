@@ -9,15 +9,12 @@
 """Index syncing CLI commands."""
 
 import json
-from datetime import datetime
 
 import click
-from flask import current_app
 from flask.cli import with_appcontext
 from invenio_search.cli import index as index_cmd
 
 from .proxies import current_index_migrator
-from .utils import obj_or_import_string
 
 
 @index_cmd.group()
@@ -49,7 +46,6 @@ def init_migration(recipe_id, yes_i_know):
         click.echo('Index: {}'.format(dst.get('index')))
         click.echo('Aliases: {}'.format(dst.get('aliases')))
         click.echo('Mapping file path: {}'.format(dst.get('mapping')))
-        click.echo('Doc type: {}'.format(dst.get('doc_type')))
 
     confirm = yes_i_know or click.confirm(
         'Are you sure you want to apply this migration recipe?',

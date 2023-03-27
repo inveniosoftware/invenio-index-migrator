@@ -14,12 +14,10 @@ import six
 from datetime import datetime
 
 from invenio_search.proxies import current_search, current_search_client
-from invenio_search.utils import build_alias_name, build_index_name, \
-    prefix_index
+from invenio_search.utils import build_alias_name
 
 from ..indexer import SYNC_INDEXER_MQ_QUEUE, MigrationIndexer
-from ..utils import State, extract_doctype_from_mapping, \
-    get_queue_size
+from ..utils import State, get_queue_size
 
 
 class Job(object):
@@ -154,7 +152,7 @@ class ReindexJob(Job):
         )
         if self.migration.strategy == self.migration.CROSS_CLUSTER_STRATEGY:
             payload['source']['remote'] = \
-                self.migration.src_es_client.reindex_remote
+                self.src_es_client.reindex_remote
 
         # Reindex using ES Reindex API synchronously
         # Keep track of the time we issued the reindex command
@@ -164,7 +162,7 @@ class ReindexJob(Job):
             wait_for_completion=wait_for_completion,
             body=payload
         )
-        state['stats']['total'] = self.migration.src_es_client.client.count(
+        state['stats']['total'] = self.src_es_client.client.count(
             index=state['src']['index'])
         state['last_record_update'] = str(start_date)
         task_id = response.get('task', None)
@@ -198,10 +196,10 @@ class ReindexJob(Job):
 
     def initial_state(self, dry_run=False):
         """Build job's initial state."""
-        old_client = self.migration.src_es_client.client
+        old_client = self.src_es_client.client
         index = self.config['index']
 
-        src_prefix = self.migration.src_es_client.config.get('prefix')
+        src_prefix = self.src_es_client.config.get('prefix')
         src_alias_name = build_alias_name(index, prefix=src_prefix)
         if old_client.index_exists(src_alias_name) and old_client.alias_exists(
                     alias=src_alias_name):
@@ -238,7 +236,6 @@ class ReindexJob(Job):
             index=index,
             aliases=dst_index_aliases,
             mapping=mapping_fp,
-            doc_type=extract_doctype_from_mapping(mapping_fp),
         )
 
         initial_state = dict(
@@ -253,7 +250,7 @@ class ReindexJob(Job):
             last_record_update=None,
             reindex_task_id=None,
             threshold_reached=False,
-            rollover_threshold=self.config['rollover_threshold'],
+            rollover_threshold=self.config.get('rollover_threshold', 10),
             rollover_ready=False,
             rollover_finished=False,
             stats={},
@@ -291,8 +288,7 @@ class ReindexAndSyncJob(ReindexJob):
         for record_id, pid_status, pid_type in q:
             _dst = self.state.read()['dst']
             _index = _dst['index']
-            _doc_type = _dst['doc_type']
-            payload = {'id': record_id, 'index': _index, 'doc_type': _doc_type}
+            payload = {'id': record_id, 'index': _index}
             if pid_status == PIDStatus.DELETED:
                 payload['op'] = 'delete'
             else:
@@ -324,7 +320,6 @@ class ReindexAndSyncJob(ReindexJob):
             indexer._bulk_op(self.iter_indexer_ops(start_time), None)
             last_record_update = str(start_date)
             # Run synchornous bulk index processing
-            # TODO: make this asynchronous by default
             succeeded, failed = indexer.process_bulk_queue(
                 es_bulk_kwargs=dict(raise_on_error=False)
             )
@@ -362,45 +357,37 @@ class MultiIndicesReindexJob(Job):
         source_params = reindex_params.pop('source', {})
         dest_params = reindex_params.pop('dest', {})
         dest_params.pop('index', '')
-
-        state = self.state.read()
-        src_index = state['src']['index']
-        dst_index = state['dst']['index']
-        if not isinstance(dst_index, six.string_types):
-            raise Exception(u'"dest.index" has to be a string, and not {}'
-                .format(dst_index))
         dest_params.setdefault('version_type', 'external_gte')
 
-        payload = dict(
-            source=dict(index=src_index, **source_params),
-            dest=dict(index=dst_index, **dest_params),
-            **reindex_params
-        )
-        if self.migration.strategy == self.migration.CROSS_CLUSTER_STRATEGY:
-            payload['source']['remote'] = \
-                self.migration.src_es_client.reindex_remote
+        state = self.state.read()
 
-        # Keep track of the time we issued the reindex command
-        start_date = datetime.utcnow()
-        # Reindex using ES Reindex API synchronously
-        wait_for_completion = self.config.get('wait_for_completion', False)
-        response = current_search_client.reindex(
-            wait_for_completion=wait_for_completion,
-            body=payload
-        )
-        state['stats']['total'] = self.migration.src_es_client.client.count(
-            index=state['src']['index'])
-        state['last_record_update'] = str(start_date)
-        task_id = response.get('task', None)
-        state['reindex_task_id'] = task_id
-        if wait_for_completion:
-            if response.get('timed_out') or len(response['failures']) > 0:
-                state['status'] = 'FAILED'
-            else:
-                state['threshold_reached'] = True
-                state['status'] = 'COMPLETED'
+        # launch a reindex task for each index
+        task_ids = []
+        doc_count = 0
+        src_index_list = state['src']['index_list']
+        for src_index in src_index_list:
+            payload = dict(
+                source=dict(index=src_index, **source_params),
+                dest=dict(index=src_index, **dest_params),
+                **reindex_params
+            )
+            if self.migration.strategy == self.migration.CROSS_CLUSTER_STRATEGY:
+                payload['source']['remote'] = self.src_es_client.reindex_remote
+
+            # Reindex using ES Reindex API synchronously
+            wait_for_completion = self.config.get('wait_for_completion', False)
+            response = current_search_client.reindex(
+                wait_for_completion=wait_for_completion,
+                body=payload,
+            )
+            doc_count += self.src_es_client.client.count(index=src_index)
+            task_ids.append(response.get('task', None))
+            state['reindex_task_ids'] = task_ids
+
+        state['stats']['total'] = doc_count
+        state['last_record_update'] = str(datetime.utcnow())
         self.state.commit(state)
-        print('reindex task started: {}'.format(task_id))
+        print(u'reindex tasks started: {}'.format(task_ids))
         return state
 
     def initial_state(self, dry_run=False):
@@ -414,9 +401,14 @@ class MultiIndicesReindexJob(Job):
                 src_index = [index]
             src_index = [src_prefix + i for i in src_index]
 
+        # expand indices
+        src_index_list = []
+        old_client = self.src_es_client.client
+        for idx in src_index:
+            src_index_list.extend(sorted(old_client.indices.get_alias(idx).keys()))
+
         dst_index = build_alias_name(
             self.config['reindex_params']['dest']['index'])
-
 
         initial_state = dict(
             type="job",
@@ -425,7 +417,7 @@ class MultiIndicesReindexJob(Job):
             migration_id=self.name,
             config=self.config,
             pid_type=self.config['pid_type'],
-            src=dict(index=src_index),
+            src=dict(index=src_index, index_list=src_index_list),
             dst=dict(index=dst_index),
             last_record_update=None,
             reindex_task_id=None,
