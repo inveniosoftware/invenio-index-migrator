@@ -405,7 +405,7 @@ class MultiIndicesReindexJob(Job):
         src_index_list = []
         old_client = self.src_es_client.client
         for idx in src_index:
-            src_index_list.extend(sorted(old_client.indices.get_alias(idx).keys()))
+            src_index_list.extend(sorted(old_client.get_indexes_from_alias(idx).keys()))
 
         initial_state = dict(
             type="job",
